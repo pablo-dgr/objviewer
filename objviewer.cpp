@@ -1,6 +1,15 @@
 #include <stdio.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <d3d11.h>
+
+#if DEBUG
+#define ASSERT(x) if(x) {} else { __debugbreak(); }
+#else
+#define ASSERT(x)
+#endif
+
+#define ARRAY_LEN(x) sizeof(x) / sizeof((x)[0])
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -99,11 +108,66 @@ void ShowWindow(HWND windowHandle)
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
 
+void InitDx11(int windowWidth, int windowHeight, HWND window)
+{
+    UINT deviceCreationFlags = 0;
+#if DEBUG
+    deviceCreationFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_0
+    };
+
+    DXGI_SWAP_CHAIN_DESC swapchainDesc = {
+        .BufferDesc = {
+            .Width = (UINT)windowWidth,
+            .Height = (UINT)windowHeight,
+            .RefreshRate = {
+                .Numerator = 1,
+                .Denominator = 144
+            },
+            .Format = DXGI_FORMAT_R8G8B8A8_UNORM
+        },
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0
+        },
+        .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        .BufferCount = 2,
+        .OutputWindow = window,
+        .Windowed = TRUE,
+        .SwapEffect = DXGI_SWAP_EFFECT_DISCARD
+    };
+
+    IDXGISwapChain* swapchain = nullptr;
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* deviceCtx = nullptr;
+
+    HRESULT res = D3D11CreateDeviceAndSwapChain(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        deviceCreationFlags,
+        featureLevels,
+        ARRAY_LEN(featureLevels),
+        D3D11_SDK_VERSION,
+        &swapchainDesc,
+        &swapchain,
+        &device,
+        nullptr,
+        &deviceCtx
+    );
+    ASSERT(res == S_OK);
+}
+
 int main()
 {
     HWND window = InitWindow(1280, 720, "objviewer");
     if(window == nullptr)
         return -1;
+
+    InitDx11(1280, 720, window);
 
     ShowWindow(window);
     while(true)
