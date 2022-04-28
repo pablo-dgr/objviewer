@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
+#include <d3dcompiler.h>
 
 #if DEBUG
 #define ASSERT(x) if(x) {} else { __debugbreak(); }
@@ -218,13 +219,64 @@ ID3D11RasterizerState* InitDx11RasterizerState(Dx11* dx)
     return rasterizerState;
 }
 
+struct Vec3
+{
+    float x;
+    float y;
+    float z;
+};
+
+ID3D11Buffer* CreateStaticDx11VertexBuffer(void* data, size_t byteSize, Dx11* dx)
+{
+    D3D11_BUFFER_DESC vertexBufferDesc = {
+        .ByteWidth = (UINT)byteSize,
+        .Usage = D3D11_USAGE_IMMUTABLE,
+        .BindFlags = D3D11_BIND_VERTEX_BUFFER
+    };
+
+    D3D11_SUBRESOURCE_DATA vertexBufData = {
+        .pSysMem = data
+    };
+
+    ID3D11Buffer* vertexBuffer = nullptr;
+    HRESULT res = dx->device->CreateBuffer(&vertexBufferDesc, &vertexBufData, &vertexBuffer);
+    ASSERT(res == S_OK);
+    return vertexBuffer;
+}
+
+ID3D11InputLayout* CreateDx11InputLayout(Dx11* dx, void* vertexShaderBytecode, size_t vertexShaderBytecodeSize)
+{
+    D3D11_INPUT_ELEMENT_DESC inputElements[] = {
+        {
+            .SemanticName = "POSITION",
+            .SemanticIndex = 0,
+            .Format = DXGI_FORMAT_R32G32B32_FLOAT,
+            .InputSlot = 0,
+            .AlignedByteOffset = 0,
+            .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
+            .InstanceDataStepRate = 0
+        }
+    };
+
+    ID3D11InputLayout* inputLayout = nullptr;
+    HRESULT res = dx->device->CreateInputLayout(
+        inputElements,
+        ARRAY_LEN(inputElements),
+        vertexShaderBytecode,
+        vertexShaderBytecodeSize,
+        &inputLayout
+    );
+    ASSERT(res != S_OK);
+    return inputLayout;
+}
+
 // GOAL: 
 // --------
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
 // TODO: draw a red triangle using vertex & fragment shaders
-// TODO: vector3/vector4 and mat4 structs with basic operators/helpers
+// TODO: Vec3/Vec4 and Mat4 structs with basic operators/helpers
 // TODO: triangle with ortho projection
 // TODO: mouse and keyboard input handling
 // TODO: perspective projection
@@ -235,6 +287,122 @@ ID3D11RasterizerState* InitDx11RasterizerState(Dx11* dx)
 // TODO: render the loaded model data
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
+
+struct String
+{
+    const char* data;
+    size_t len;
+};
+
+void FreeString(String* str)
+{
+    free((void*)str->data);
+    *str = {};
+}
+
+String ReadAllTextFromFile(const char* filename)
+{
+    HANDLE file = CreateFileA(
+        filename,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if(file == INVALID_HANDLE_VALUE)
+    {
+        ASSERT(false);
+        return {};
+    }
+
+    LARGE_INTEGER tmpFileSize = {};
+    if(!GetFileSizeEx(file, &tmpFileSize))
+    {
+        ASSERT(false);
+        CloseHandle(file);
+        return {};
+    }
+
+    size_t fileSize = tmpFileSize.QuadPart;
+    void* buffer = calloc(1, fileSize + 1);
+    ASSERT(buffer != nullptr);
+
+    ASSERT(fileSize < 0xFFFFFFFF); // big ass files not supported (yet)
+
+    DWORD bytesRead = 0;
+    ReadFile(
+        file,
+        buffer,
+        (DWORD)fileSize,
+        &bytesRead,
+        nullptr
+    );
+    if(bytesRead == 0)
+    {
+        ASSERT(false);
+        free(buffer);
+        CloseHandle(file);
+        return {};
+    }
+
+    CloseHandle(file);
+    return {
+        .data = (char*)buffer,
+        .len = fileSize
+    };
+}
+
+enum class ShaderType
+{
+    Vertex,
+    Pixel
+};
+
+ID3DBlob* CompileShaderCode(ShaderType type, String code)
+{
+    const char* target = nullptr;
+    if(type == ShaderType::Pixel)
+        target = "ps_5_0";
+    else if(type == ShaderType::Vertex)
+        target = "vs_5_0";
+    else
+        ASSERT(false);
+
+    UINT compileFlags = 0;
+#if DEBUG
+    compileFlags |= D3DCOMPILE_DEBUG;
+#endif
+
+    ID3DBlob* compiledCode = nullptr;
+    ID3DBlob* compileErrors = nullptr;
+
+    HRESULT res = D3DCompile(
+        (void*)code.data,
+        code.len,
+        nullptr,
+        nullptr,
+        nullptr,
+        "main",
+        target,
+        compileFlags,
+        0,
+        &compiledCode,
+        &compileErrors
+    );
+    ASSERT(res);
+
+    if(compileErrors != nullptr)
+    {
+        printf("Failed to compile shader: %s\n", (const char*)compileErrors->GetBufferPointer());
+        compileErrors->Release();
+        return nullptr;
+    }
+
+    return compiledCode;
+}
+
 int main()
 {
     HWND window = InitWindow(1280, 720, "objviewer");
@@ -252,6 +420,29 @@ int main()
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
 
+    Vec3 vertices[] = {
+        {  0.0f,  0.5f, 0.0f },
+        { -0.5f, -0.5f, 0.0f },
+        {  0.5f, -0.5f, 0.0f }
+    };
+
+    ID3D11Buffer* vertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), &dx);
+    String vsCode = ReadAllTextFromFile("res/basiccolorvs.hlsl");
+    ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
+    ID3D11VertexShader* vertexShader = nullptr;
+    dx.device->CreateVertexShader(
+        vsByteCode->GetBufferPointer(), 
+        vsByteCode->GetBufferSize(), 
+        nullptr, 
+        &vertexShader
+    );
+
+    // TODO: create ps from file here
+
+    // TODO: create input layout
+
+    // TODO: use vertexbuffer, inputlayout, shaders to do draw call
+
     ShowWindow(window);
     while(true)
     {
@@ -265,6 +456,10 @@ int main()
         dx.swapchain->Present(1, 0);
     }    
 
+    vsByteCode->Release();
+    FreeString(&vsCode);
+
+    vertexBuffer->Release();
     rasterizerState->Release();
     FreeDx11Backbuffer(&backbuffer);
     FreeDx11(&dx);
