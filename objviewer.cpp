@@ -226,7 +226,20 @@ struct Vec3
     float z;
 };
 
-ID3D11Buffer* CreateStaticDx11VertexBuffer(void* data, size_t byteSize, Dx11* dx)
+struct Dx11VertexBuffer
+{
+    ID3D11Buffer* buffer;
+    UINT stride;
+    UINT byteOffset;
+};
+
+void FreeDx11VertexBuffer(Dx11VertexBuffer* vertexBuffer)
+{
+    vertexBuffer->buffer->Release();
+    *vertexBuffer = {};
+}
+
+Dx11VertexBuffer CreateStaticDx11VertexBuffer(void* data, size_t byteSize, UINT stride, UINT byteOffset, Dx11* dx)
 {
     D3D11_BUFFER_DESC vertexBufferDesc = {
         .ByteWidth = (UINT)byteSize,
@@ -241,10 +254,14 @@ ID3D11Buffer* CreateStaticDx11VertexBuffer(void* data, size_t byteSize, Dx11* dx
     ID3D11Buffer* vertexBuffer = nullptr;
     HRESULT res = dx->device->CreateBuffer(&vertexBufferDesc, &vertexBufData, &vertexBuffer);
     ASSERT(res == S_OK);
-    return vertexBuffer;
+    return {
+        .buffer = vertexBuffer,
+        .stride = stride,
+        .byteOffset = byteOffset
+    };
 }
 
-ID3D11InputLayout* CreateDx11InputLayout(Dx11* dx, void* vertexShaderBytecode, size_t vertexShaderBytecodeSize)
+ID3D11InputLayout* CreateDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
 {
     D3D11_INPUT_ELEMENT_DESC inputElements[] = {
         {
@@ -262,31 +279,13 @@ ID3D11InputLayout* CreateDx11InputLayout(Dx11* dx, void* vertexShaderBytecode, s
     HRESULT res = dx->device->CreateInputLayout(
         inputElements,
         ARRAY_LEN(inputElements),
-        vertexShaderBytecode,
-        vertexShaderBytecodeSize,
+        vsByteCode->GetBufferPointer(),
+        vsByteCode->GetBufferSize(),
         &inputLayout
     );
-    ASSERT(res != S_OK);
+    ASSERT(res == S_OK);
     return inputLayout;
 }
-
-// GOAL: 
-// --------
-// Load a textured 3D model from an .obj file 
-// with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
-// --------
-// TODO: draw a red triangle using vertex & fragment shaders
-// TODO: Vec3/Vec4 and Mat4 structs with basic operators/helpers
-// TODO: triangle with ortho projection
-// TODO: mouse and keyboard input handling
-// TODO: perspective projection
-// TODO: fps flying camera
-// TODO: a generated line grid
-// TODO: get a sample .obj file
-// TODO: load data from .obj file
-// TODO: render the loaded model data
-// TODO: mouse drag controls for model rotation
-// TODO: fps & draw model stats text on screen
 
 struct String
 {
@@ -391,7 +390,7 @@ ID3DBlob* CompileShaderCode(ShaderType type, String code)
         &compiledCode,
         &compileErrors
     );
-    ASSERT(res);
+    ASSERT(res == S_OK);
 
     if(compileErrors != nullptr)
     {
@@ -402,6 +401,23 @@ ID3DBlob* CompileShaderCode(ShaderType type, String code)
 
     return compiledCode;
 }
+
+// GOAL: 
+// --------
+// Load a textured 3D model from an .obj file 
+// with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
+// --------
+// TODO: Vec3/Vec4 and Mat4 structs with basic operators/helpers
+// TODO: triangle with ortho projection
+// TODO: mouse and keyboard input handling
+// TODO: perspective projection
+// TODO: fps flying camera
+// TODO: a generated line grid
+// TODO: get a sample .obj file
+// TODO: load data from .obj file
+// TODO: render the loaded model data
+// TODO: mouse drag controls for model rotation
+// TODO: fps & draw model stats text on screen
 
 int main()
 {
@@ -426,22 +442,28 @@ int main()
         {  0.5f, -0.5f, 0.0f }
     };
 
-    ID3D11Buffer* vertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), &dx);
+    Dx11VertexBuffer vertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), 3 * sizeof(float), 0, &dx);
     String vsCode = ReadAllTextFromFile("res/basiccolorvs.hlsl");
     ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
-    ID3D11VertexShader* vertexShader = nullptr;
+    ID3D11VertexShader* vs = nullptr;
     dx.device->CreateVertexShader(
         vsByteCode->GetBufferPointer(), 
         vsByteCode->GetBufferSize(), 
         nullptr, 
-        &vertexShader
+        &vs
+    );
+    
+    String psCode = ReadAllTextFromFile("res/basiccolorps.hlsl");
+    ID3DBlob* psByteCode = CompileShaderCode(ShaderType::Pixel, psCode);
+    ID3D11PixelShader* ps = nullptr;
+    dx.device->CreatePixelShader(
+        psByteCode->GetBufferPointer(), 
+        psByteCode->GetBufferSize(), 
+        nullptr, 
+        &ps
     );
 
-    // TODO: create ps from file here
-
-    // TODO: create input layout
-
-    // TODO: use vertexbuffer, inputlayout, shaders to do draw call
+    ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
 
     ShowWindow(window);
     while(true)
@@ -453,13 +475,30 @@ int main()
         dx.context->RSSetState(rasterizerState);
         dx.context->OMSetRenderTargets(1, &backbuffer.view, nullptr);
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
+
+        dx.context->IASetVertexBuffers(0, 1, &vertexBuffer.buffer, &vertexBuffer.stride, &vertexBuffer.byteOffset);
+        dx.context->IASetInputLayout(inputLayout);
+        dx.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        dx.context->VSSetShader(vs, nullptr, 0);
+        dx.context->PSSetShader(ps, nullptr, 0);
+
+        // TODO: put vertex count somewhere else?
+        dx.context->Draw(ARRAY_LEN(vertices), 0);
+
         dx.swapchain->Present(1, 0);
     }    
 
+    inputLayout->Release();
+
+    ps->Release();
+    psByteCode->Release();
+    FreeString(&psCode);
+
+    vs->Release();
     vsByteCode->Release();
     FreeString(&vsCode);
 
-    vertexBuffer->Release();
+    FreeDx11VertexBuffer(&vertexBuffer);
     rasterizerState->Release();
     FreeDx11Backbuffer(&backbuffer);
     FreeDx11(&dx);
