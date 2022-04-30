@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <string.h>
 
 #if DEBUG
 #define ASSERT(x) if(x) {} else { __debugbreak(); }
@@ -11,6 +12,9 @@
 #endif
 
 #define ARRAY_LEN(x) sizeof(x) / sizeof((x)[0])
+
+#define CHECK_CBUFFER_ALIGNMENT(x) static_assert(sizeof(x) % 16 == 0, "constant buffer data must be 16-byte aligned")
+
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -79,7 +83,7 @@ bool ProcessWindowEvents()
         
         if(event.message == WM_QUIT)
             return false;
-        
+
         DispatchMessageA(&event);
     }
     return true;
@@ -194,7 +198,7 @@ void FreeDx11Backbuffer(Dx11Backbuffer* backbuffer)
     *backbuffer = {};
 }
 
-D3D11_VIEWPORT InitDx11ViewportForWindow(HWND window)
+D3D11_VIEWPORT GetDx11ViewportForWindow(HWND window)
 {
     RECT windowRect = {};
     GetClientRect(window, &windowRect);
@@ -204,6 +208,17 @@ D3D11_VIEWPORT InitDx11ViewportForWindow(HWND window)
         .MinDepth = 0.0f,
         .MaxDepth = 1.0f
     };
+}
+
+bool UpdateDx11ViewportForWindow(D3D11_VIEWPORT* oldViewport, HWND window)
+{
+    D3D11_VIEWPORT newViewport = GetDx11ViewportForWindow(window);
+    if(oldViewport->Width != newViewport.Width || oldViewport->Height != newViewport.Height)
+    {
+        *oldViewport = newViewport;
+        return true;
+    }
+    return false;
 }
 
 ID3D11RasterizerState* InitDx11RasterizerState(Dx11* dx)
@@ -218,13 +233,6 @@ ID3D11RasterizerState* InitDx11RasterizerState(Dx11* dx)
 
     return rasterizerState;
 }
-
-struct Vec3
-{
-    float x;
-    float y;
-    float z;
-};
 
 struct Dx11VertexBuffer
 {
@@ -402,6 +410,158 @@ ID3DBlob* CompileShaderCode(ShaderType type, String code)
     return compiledCode;
 }
 
+
+struct Vec3
+{
+    float x;
+    float y;
+    float z;
+};
+
+Vec3 operator + (const Vec3& one, const Vec3& other)
+{
+    return {
+        .x = one.x + other.x,
+        .y = one.y + other.y,
+        .z = one.z + other.z,
+    };
+}
+
+Vec3 operator - (const Vec3& one, const Vec3& other)
+{
+    return {
+        .x = one.x - other.x,
+        .y = one.y - other.y,
+        .z = one.z - other.z,
+    };
+}
+
+Vec3 operator * (const Vec3& vec, float scalar)
+{
+    return {
+        .x = vec.x * scalar,
+        .y = vec.y * scalar,
+        .z = vec.z * scalar,
+    };
+}
+
+Vec3 operator / (const Vec3& vec, float scalar)
+{
+    return {
+        .x = vec.x / scalar,
+        .y = vec.y / scalar,
+        .z = vec.z / scalar,
+    };
+}
+
+struct Vec4
+{
+    float x;
+    float y;
+    float z;
+    float w;
+};
+
+Vec4 operator + (const Vec4& one, const Vec4& other)
+{
+    return {
+        .x = one.x + other.x,
+        .y = one.y + other.y,
+        .z = one.z + other.z,
+        .w = one.w + other.w,
+    };
+}
+
+Vec4 operator - (const Vec4& one, const Vec4& other)
+{
+    return {
+        .x = one.x - other.x,
+        .y = one.y - other.y,
+        .z = one.z - other.z,
+        .w = one.w - other.w,
+    };
+}
+
+Vec4 operator * (const Vec4& vec, float scalar)
+{
+    return {
+        .x = vec.x * scalar,
+        .y = vec.y * scalar,
+        .z = vec.z * scalar,
+        .w = vec.w * scalar,
+    };
+}
+
+Vec4 operator / (const Vec4& vec, float scalar)
+{
+    return {
+        .x = vec.x / scalar,
+        .y = vec.y / scalar,
+        .z = vec.z / scalar,
+        .w = vec.w / scalar,
+    };
+}
+
+struct Mat4
+{
+    float data[4][4];
+};
+
+Mat4 operator * (const Mat4& one, const Mat4& other)
+{
+    Mat4 res = {};
+
+    for(int x = 0; x < 4; x++) {
+        for(int y = 0; y < 4; y++) {
+            res.data[y][x] = 
+                (one.data[0][x] * other.data[y][0]) + 
+                (one.data[1][x] * other.data[y][1]) + 
+                (one.data[2][x] * other.data[y][2]) + 
+                (one.data[3][x] * other.data[y][3]);
+        }
+    }
+
+    return res;
+}
+
+Mat4 IdentityMat4()
+{
+    Mat4 res = {};
+    for(int i = 0; i < 4; i++)
+        res.data[i][i] = 1.0f;
+    return res;
+}
+
+Mat4 TranslateMat4(Vec3 position)
+{
+    Mat4 res = IdentityMat4();
+    res.data[3][0] = position.x;
+    res.data[3][1] = position.y;
+    res.data[3][2] = position.z;
+    return res;
+}
+
+Mat4 ScaleMat4(Vec3 scale)
+{
+    Mat4 res = IdentityMat4();
+    res.data[0][0] = scale.x;
+    res.data[1][1] = scale.y;
+    res.data[2][2] = scale.z;
+    return res;
+}
+
+Mat4 OrthoProjMat4(float left, float right, float bot, float top, float nearClip, float farClip)
+{
+    Mat4 res = IdentityMat4();
+    res.data[0][0] = 2.0f / (right - left);
+    res.data[1][1] = 2.0f / (top - bot);
+    res.data[2][2] = 1.0f / (nearClip - farClip);
+    res.data[3][0] = (left + right) / (left - right);
+    res.data[3][1] = (top + bot) / (bot - top);
+    res.data[3][2] = nearClip / (nearClip - farClip);
+    return res;
+}
+
 // GOAL: 
 // --------
 // Load a textured 3D model from an .obj file 
@@ -419,20 +579,71 @@ ID3DBlob* CompileShaderCode(ShaderType type, String code)
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
 
+struct BasicColorShaderData
+{
+    Mat4 xformMat;
+};
+CHECK_CBUFFER_ALIGNMENT(BasicColorShaderData);
+
+ID3D11Buffer* CreateDx11ConstantBuffer(UINT dataByteSize, Dx11* dx)
+{
+    D3D11_BUFFER_DESC cBufferDesc = {
+        .ByteWidth = dataByteSize,
+        .Usage = D3D11_USAGE_DYNAMIC,
+        .BindFlags = D3D11_BIND_CONSTANT_BUFFER,
+        .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE
+    };
+
+    ID3D11Buffer* cBuffer = nullptr;
+    HRESULT res = dx->device->CreateBuffer(
+        &cBufferDesc,
+        nullptr,
+        &cBuffer
+    );
+    ASSERT(res == S_OK);
+
+    return cBuffer;
+}
+
+void UploadDataToConstantBuffer(ID3D11Buffer* cBuffer, void* data, UINT dataByteSize, Dx11* dx)
+{
+    D3D11_MAPPED_SUBRESOURCE mappedRes = {};
+    HRESULT res = dx->context->Map(cBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedRes);
+    ASSERT(res == S_OK);
+    memcpy(mappedRes.pData, data, dataByteSize);
+    dx->context->Unmap(cBuffer, 0);
+}
+
+void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeight, Dx11* dx)
+{
+    dx->context->OMSetRenderTargets(0, 0, 0);
+    FreeDx11Backbuffer(backbuffer);
+    HRESULT res = dx->swapchain->ResizeBuffers(
+        2,
+        (UINT)newWidth,
+        (UINT)newHeight,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        0
+    );
+    ASSERT(res == S_OK);
+    *backbuffer = InitDx11Backbuffer(dx);
+}
+
 int main()
 {
-    HWND window = InitWindow(1280, 720, "objviewer");
+    int windowWidth = 640;
+    int windowHeight = 480;
+
+    HWND window = InitWindow(windowWidth, windowHeight, "objviewer");
     if(window == nullptr)
         return -1;
 
     Dx11 dx = {};
-    if(!InitDx11(&dx, 1280, 720, window))
+    if(!InitDx11(&dx, windowWidth, windowHeight, window))
         return -1;
 
     Dx11Backbuffer backbuffer = InitDx11Backbuffer(&dx);
     float clearColor[] = { 0.3f, 0.4f, 0.9f, 1.0f };
-
-    D3D11_VIEWPORT viewport = InitDx11ViewportForWindow(window);
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
 
@@ -465,11 +676,25 @@ int main()
 
     ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
 
+    Vec3 position = { 200.0f, 200.0f, -1.0f };
+    Vec3 scale = { 100.0f, 100.0f, 1.0f };
+    BasicColorShaderData shaderData = {};
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+
+    ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
+    D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
+
     ShowWindow(window);
     while(true)
     {
         if(!ProcessWindowEvents())
             break;
+
+        if(UpdateDx11ViewportForWindow(&viewport, window))
+            ResizeDx11Backbuffer(&backbuffer, (int)viewport.Width, (int)viewport.Height, &dx);
+
+        Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
+        shaderData.xformMat = orthoProjMat * modelMat;
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
@@ -482,11 +707,16 @@ int main()
         dx.context->VSSetShader(vs, nullptr, 0);
         dx.context->PSSetShader(ps, nullptr, 0);
 
+        UploadDataToConstantBuffer(basicColorCBuffer, &shaderData, sizeof(shaderData), &dx);
+        dx.context->VSSetConstantBuffers(0, 1, &basicColorCBuffer);
+
         // TODO: put vertex count somewhere else?
         dx.context->Draw(ARRAY_LEN(vertices), 0);
 
         dx.swapchain->Present(1, 0);
     }    
+
+    basicColorCBuffer->Release();
 
     inputLayout->Release();
 
