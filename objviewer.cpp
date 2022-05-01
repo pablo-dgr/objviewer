@@ -4,6 +4,7 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <string.h>
+#include <stdint.h>
 
 #if DEBUG
 #define ASSERT(x) if(x) {} else { __debugbreak(); }
@@ -72,7 +73,70 @@ HWND InitWindow(int width, int height, const char* title)
     );
 }
 
-bool ProcessWindowEvents()
+enum class Vkey
+{
+    Z = 'Z',
+    Q = 'Q',
+    S = 'S',
+    D = 'D',
+    A = 'A',
+    Space = VK_SPACE
+};
+
+struct Keybind
+{
+    Vkey key;
+    int keyDownTransitionCount;
+    int keyUpTransitionCount;
+    bool isKeyDown;
+};
+
+struct Input
+{
+    Keybind moveForward;
+    Keybind moveBackward;
+    Keybind moveLeft;
+    Keybind moveRight;
+    Keybind moveDown;
+    Keybind moveUp;
+};
+
+void HandleKeyUpForBind(Keybind* keybind, MSG* event)
+{
+    if((int)keybind->key == event->wParam)
+    {
+        keybind->isKeyDown = false;
+        keybind->keyUpTransitionCount += 1;
+    }
+}
+
+void HandleKeyDownForBind(Keybind* keybind, MSG* event)
+{
+    if((int)keybind->key == event->wParam)
+    {
+        keybind->isKeyDown = true;
+        if((event->lParam & (1 << 30)) == 0)
+            keybind->keyDownTransitionCount += 1;
+    }
+}
+
+void ResetKeyTransitions(Keybind* keybind)
+{
+    keybind->keyUpTransitionCount = 0;
+    keybind->keyDownTransitionCount = 0;
+}
+
+void ResetInputKeyTransitions(Input* input)
+{
+    ResetKeyTransitions(&input->moveForward);
+    ResetKeyTransitions(&input->moveBackward);
+    ResetKeyTransitions(&input->moveLeft);
+    ResetKeyTransitions(&input->moveRight);
+    ResetKeyTransitions(&input->moveDown);
+    ResetKeyTransitions(&input->moveUp);
+}
+
+bool ProcessWindowEvents(Input* input)
 {
     MSG event = {};
     BOOL peekRes = 0;
@@ -81,8 +145,28 @@ bool ProcessWindowEvents()
         if(peekRes < 0)
             continue;
         
-        if(event.message == WM_QUIT)
+        if(event.message == WM_KEYUP)
+        {
+            HandleKeyUpForBind(&input->moveForward, &event);
+            HandleKeyUpForBind(&input->moveBackward, &event);
+            HandleKeyUpForBind(&input->moveLeft, &event);
+            HandleKeyUpForBind(&input->moveRight, &event);
+            HandleKeyUpForBind(&input->moveDown, &event);
+            HandleKeyUpForBind(&input->moveUp, &event);
+        }
+        else if(event.message == WM_KEYDOWN)
+        {
+            HandleKeyDownForBind(&input->moveForward, &event);
+            HandleKeyDownForBind(&input->moveBackward, &event);
+            HandleKeyDownForBind(&input->moveLeft, &event);
+            HandleKeyDownForBind(&input->moveRight, &event);
+            HandleKeyDownForBind(&input->moveDown, &event);
+            HandleKeyDownForBind(&input->moveUp, &event);
+        }
+        else if(event.message == WM_QUIT)
+        {
             return false;
+        }
 
         DispatchMessageA(&event);
     }
@@ -562,23 +646,6 @@ Mat4 OrthoProjMat4(float left, float right, float bot, float top, float nearClip
     return res;
 }
 
-// GOAL: 
-// --------
-// Load a textured 3D model from an .obj file 
-// with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
-// --------
-// TODO: Vec3/Vec4 and Mat4 structs with basic operators/helpers
-// TODO: triangle with ortho projection
-// TODO: mouse and keyboard input handling
-// TODO: perspective projection
-// TODO: fps flying camera
-// TODO: a generated line grid
-// TODO: get a sample .obj file
-// TODO: load data from .obj file
-// TODO: render the loaded model data
-// TODO: mouse drag controls for model rotation
-// TODO: fps & draw model stats text on screen
-
 struct BasicColorShaderData
 {
     Mat4 xformMat;
@@ -629,10 +696,25 @@ void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeigh
     *backbuffer = InitDx11Backbuffer(dx);
 }
 
+// GOAL: 
+// --------
+// Load a textured 3D model from an .obj file 
+// with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
+// --------
+// TODO: mouse and keyboard input handling
+// TODO: perspective projection
+// TODO: fps flying camera
+// TODO: a generated line grid
+// TODO: get a sample .obj file
+// TODO: load data from .obj file
+// TODO: render the loaded model data
+// TODO: mouse drag controls for model rotation
+// TODO: fps & draw model stats text on screen
+
 int main()
 {
-    int windowWidth = 640;
-    int windowHeight = 480;
+    int windowWidth = 1280;
+    int windowHeight = 720;
 
     HWND window = InitWindow(windowWidth, windowHeight, "objviewer");
     if(window == nullptr)
@@ -684,10 +766,20 @@ int main()
     ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
     D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
 
+    Input input = {
+        .moveForward  = { .key = Vkey::Z },
+        .moveBackward = { .key = Vkey::S },
+        .moveLeft     = { .key = Vkey::Q },
+        .moveRight    = { .key = Vkey::D },
+        .moveDown     = { .key = Vkey::A },
+        .moveUp       = { .key = Vkey::Space }
+    };
+
     ShowWindow(window);
     while(true)
     {
-        if(!ProcessWindowEvents())
+        ResetInputKeyTransitions(&input);
+        if(!ProcessWindowEvents(&input))
             break;
 
         if(UpdateDx11ViewportForWindow(&viewport, window))
@@ -695,6 +787,21 @@ int main()
 
         Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
         shaderData.xformMat = orthoProjMat * modelMat;
+
+        if(input.moveForward.isKeyDown)
+        {
+            printf("moving forward\n");
+        }
+
+        if(input.moveBackward.isKeyDown)
+        {
+            printf("moving backward\n");
+        }
+
+        if(input.moveUp.keyDownTransitionCount > 0)
+        {
+            printf("pressed space\n");
+        }
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
