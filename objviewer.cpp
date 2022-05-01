@@ -99,6 +99,10 @@ struct Input
     Keybind moveRight;
     Keybind moveDown;
     Keybind moveUp;
+    int mousePosX;
+    int mousePosY;
+    int mouseMoveX;
+    int mouseMoveY;
 };
 
 void HandleKeyUpForBind(Keybind* keybind, MSG* event)
@@ -136,6 +140,32 @@ void ResetInputKeyTransitions(Input* input)
     ResetKeyTransitions(&input->moveUp);
 }
 
+void ResetRelativeInputMouseData(Input* input)
+{
+    input->mouseMoveX = 0;
+    input->mouseMoveY = 0;
+}
+
+void GetMousePositionInWindow(Input* input, HWND window)
+{
+    POINT mousePos = {};
+    GetCursorPos(&mousePos);
+    ScreenToClient(window, &mousePos);
+    input->mousePosX = mousePos.x;
+    input->mousePosY = mousePos.y;
+}
+
+void SetupRawMouseInput()
+{
+    RAWINPUTDEVICE rawMouse = {
+        .usUsagePage = 0x0001,
+        .usUsage = 0x0002
+    };
+
+    BOOL res = RegisterRawInputDevices(&rawMouse, 1, sizeof(RAWINPUTDEVICE));
+    ASSERT(res);
+}
+
 bool ProcessWindowEvents(Input* input)
 {
     MSG event = {};
@@ -145,7 +175,26 @@ bool ProcessWindowEvents(Input* input)
         if(peekRes < 0)
             continue;
         
-        if(event.message == WM_KEYUP)
+        if(event.message == WM_INPUT)
+        {
+            RAWINPUT rawInput = {};
+            UINT rawInputDataSize = sizeof(RAWINPUT);
+            UINT res = GetRawInputData(
+                (HRAWINPUT)event.lParam,
+                RID_INPUT,
+                &rawInput,
+                &rawInputDataSize,
+                sizeof(RAWINPUTHEADER)
+            );
+            ASSERT(res == sizeof(RAWINPUT));
+
+            if(rawInput.header.dwType == RIM_TYPEMOUSE && rawInput.data.mouse.usFlags == MOUSE_MOVE_RELATIVE)
+            {
+                input->mouseMoveX += rawInput.data.mouse.lLastX;
+                input->mouseMoveY += rawInput.data.mouse.lLastY;
+            }
+        }
+        else if(event.message == WM_KEYUP)
         {
             HandleKeyUpForBind(&input->moveForward, &event);
             HandleKeyUpForBind(&input->moveBackward, &event);
@@ -701,7 +750,6 @@ void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeigh
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: mouse and keyboard input handling
 // TODO: perspective projection
 // TODO: fps flying camera
 // TODO: a generated line grid
@@ -766,6 +814,8 @@ int main()
     ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
     D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
 
+    SetupRawMouseInput();
+
     Input input = {
         .moveForward  = { .key = Vkey::Z },
         .moveBackward = { .key = Vkey::S },
@@ -779,6 +829,8 @@ int main()
     while(true)
     {
         ResetInputKeyTransitions(&input);
+        ResetRelativeInputMouseData(&input);
+        GetMousePositionInWindow(&input, window);
         if(!ProcessWindowEvents(&input))
             break;
 
@@ -802,6 +854,7 @@ int main()
         {
             printf("pressed space\n");
         }
+        printf("mouse pos: x = %d, y = %d | move: x = %d, y = %d\n", input.mousePosX, input.mousePosY, input.mouseMoveX, input.mouseMoveY);
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
