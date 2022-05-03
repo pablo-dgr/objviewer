@@ -5,6 +5,7 @@
 #include <d3dcompiler.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #if DEBUG
 #define ASSERT(x) if(x) {} else { __debugbreak(); }
@@ -543,6 +544,20 @@ ID3DBlob* CompileShaderCode(ShaderType type, String code)
     return compiledCode;
 }
 
+// pi rad = 180*
+constexpr double pi = 3.141592653589793238462643383279502;
+constexpr double radiansToDegreesFactor = 180.0 / pi;
+constexpr double degreesToRadiansFactor = pi / 180.0f;
+
+float toDegrees(float radians)
+{
+    return radians * (float)radiansToDegreesFactor;
+}
+
+float toRadians(float degrees)
+{
+    return degrees * (float)degreesToRadiansFactor;
+}
 
 struct Vec3
 {
@@ -584,6 +599,30 @@ Vec3 operator / (const Vec3& vec, float scalar)
         .x = vec.x / scalar,
         .y = vec.y / scalar,
         .z = vec.z / scalar,
+    };
+}
+
+float Dot(const Vec3& one, const Vec3& other)
+{
+    return (one.x * other.x) + (one.y * other.y) + (one.z * other.z);
+}
+
+float Len(const Vec3& vec)
+{
+    return sqrtf(Dot(vec, vec));
+}
+
+Vec3 Normalize(const Vec3& vec)
+{
+    return vec / Len(vec);
+}
+
+Vec3 Cross(const Vec3& one, const Vec3& other)
+{
+    return {
+        .x = one.y * other.z - one.z * other.y,
+        .y = one.z * other.x - one.x * other.z,
+        .z = one.x * other.y - one.y * other.x 
     };
 }
 
@@ -685,6 +724,7 @@ Mat4 ScaleMat4(Vec3 scale)
 
 Mat4 OrthoProjMat4(float left, float right, float bot, float top, float nearClip, float farClip)
 {
+    // based on D3DXMatrixOrthoOffCenterRH
     Mat4 res = IdentityMat4();
     res.data[0][0] = 2.0f / (right - left);
     res.data[1][1] = 2.0f / (top - bot);
@@ -692,6 +732,90 @@ Mat4 OrthoProjMat4(float left, float right, float bot, float top, float nearClip
     res.data[3][0] = (left + right) / (left - right);
     res.data[3][1] = (top + bot) / (bot - top);
     res.data[3][2] = nearClip / (nearClip - farClip);
+    return res;
+}
+
+Mat4 PerspectiveProjMat4(float fovY, float width, float height, float nearClip, float farClip)
+{
+    // based on D3DXMatrixPerspectiveFovRH
+    float aspectRatio = width / height;
+    // 1 / tan = cotangent
+    float yScale = 1.0f / tanf(fovY / 2.0f);
+    float xScale = yScale / aspectRatio;
+
+    Mat4 res = {};
+    res.data[0][0] = xScale;
+    res.data[1][1] = yScale;
+    res.data[2][2] = farClip / (nearClip - farClip);
+    res.data[2][3] = -1;
+    res.data[3][2] = nearClip * farClip / (nearClip - farClip);
+    return res;
+}
+
+Mat4 LookatMat4(Vec3 eye, Vec3 at)
+{
+    // based on LearnOpenGL/Getting started/Camera
+    Vec3 up = { 0.0f, 1.0f, 0.0f };
+    Vec3 zAxis = Normalize(eye - at);
+    Vec3 xAxis = Normalize(Cross(up, zAxis));
+    Vec3 yAxis = Cross(zAxis, xAxis);
+
+    Mat4 res = {};
+    res.data[0][0] = xAxis.x;
+    res.data[0][1] = yAxis.x;
+    res.data[0][2] = zAxis.x;
+    
+    res.data[1][0] = xAxis.y;
+    res.data[1][1] = yAxis.y;
+    res.data[1][2] = zAxis.y;
+    
+    res.data[2][0] = xAxis.z;
+    res.data[2][1] = yAxis.z;
+    res.data[2][2] = zAxis.z;
+
+    res.data[3][0] = -Dot(xAxis, eye);
+    res.data[3][1] = -Dot(yAxis, eye);
+    res.data[3][2] = -Dot(zAxis, eye);
+    res.data[3][3] = 1.0f;
+    return res;
+}
+
+Mat4 RotateEulerYMat4(float angleRads)
+{
+    float cosine = cosf(angleRads);
+    float sine = sinf(angleRads);
+    
+    Mat4 res = IdentityMat4();
+    res.data[0][0] =  cosine;
+    res.data[0][2] =  -sine;
+    res.data[0][2] =  sine;
+    res.data[2][2] =  cosine;
+    return res;
+}
+
+Mat4 RotateEulerXMat4(float angleRads)
+{
+    float cosine = cosf(angleRads);
+    float sine = sinf(angleRads);
+    
+    Mat4 res = IdentityMat4();
+    res.data[1][1] =  cosine;
+    res.data[1][2] =  sine;
+    res.data[2][1] =  -sine;
+    res.data[2][2] =  cosine;
+    return res;
+}
+
+Mat4 RotateEulerZMat4(float angleRads)
+{
+    float cosine = cosf(angleRads);
+    float sine = sinf(angleRads);
+    
+    Mat4 res = IdentityMat4();
+    res.data[0][0] =  cosine;
+    res.data[0][1] =  sine;
+    res.data[1][0] =  -sine;
+    res.data[1][1] =  cosine;
     return res;
 }
 
@@ -750,7 +874,6 @@ void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeigh
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: perspective projection
 // TODO: fps flying camera
 // TODO: a generated line grid
 // TODO: get a sample .obj file
@@ -806,8 +929,10 @@ int main()
 
     ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
 
-    Vec3 position = { 200.0f, 200.0f, -1.0f };
-    Vec3 scale = { 100.0f, 100.0f, 1.0f };
+    //Vec3 position = { 200.0f, 200.0f, -1.0f };
+    //Vec3 scale = { 100.0f, 100.0f, 1.0f };
+    Vec3 position = { 0.0f, 0.0f, -1.0f };
+    Vec3 scale = { 1.0f, 1.0f, 1.0f };
     BasicColorShaderData shaderData = {};
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
@@ -837,8 +962,11 @@ int main()
         if(UpdateDx11ViewportForWindow(&viewport, window))
             ResizeDx11Backbuffer(&backbuffer, (int)viewport.Width, (int)viewport.Height, &dx);
 
-        Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
-        shaderData.xformMat = orthoProjMat * modelMat;
+        //Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
+        //shaderData.xformMat = orthoProjMat * modelMat;
+        Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
+        Mat4 viewMat = LookatMat4({ 0.0f, 0.0f, 2.0f }, { 0.0f, 0.0f, 0.0f });
+        shaderData.xformMat = perspectiveProjMat * viewMat * modelMat;
 
         if(input.moveForward.isKeyDown)
         {
