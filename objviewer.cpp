@@ -81,7 +81,8 @@ enum class Vkey
     S = 'S',
     D = 'D',
     A = 'A',
-    Space = VK_SPACE
+    Space = VK_SPACE,
+    F1 = VK_F1
 };
 
 struct Keybind
@@ -100,6 +101,7 @@ struct Input
     Keybind moveRight;
     Keybind moveDown;
     Keybind moveUp;
+    Keybind devToggle;
     int mousePosX;
     int mousePosY;
     int mouseMoveX;
@@ -139,6 +141,7 @@ void ResetInputKeyTransitions(Input* input)
     ResetKeyTransitions(&input->moveRight);
     ResetKeyTransitions(&input->moveDown);
     ResetKeyTransitions(&input->moveUp);
+    ResetKeyTransitions(&input->devToggle);
 }
 
 void ResetRelativeInputMouseData(Input* input)
@@ -203,6 +206,7 @@ bool ProcessWindowEvents(Input* input)
             HandleKeyUpForBind(&input->moveRight, &event);
             HandleKeyUpForBind(&input->moveDown, &event);
             HandleKeyUpForBind(&input->moveUp, &event);
+            HandleKeyUpForBind(&input->devToggle, &event);
         }
         else if(event.message == WM_KEYDOWN)
         {
@@ -212,6 +216,7 @@ bool ProcessWindowEvents(Input* input)
             HandleKeyDownForBind(&input->moveRight, &event);
             HandleKeyDownForBind(&input->moveDown, &event);
             HandleKeyDownForBind(&input->moveUp, &event);
+            HandleKeyDownForBind(&input->devToggle, &event);
         }
         else if(event.message == WM_QUIT)
         {
@@ -559,6 +564,16 @@ float toRadians(float degrees)
     return degrees * (float)degreesToRadiansFactor;
 }
 
+float Clamp(float min, float max, float value)
+{
+    if(value < min)
+        return min;
+    else if(value > max)
+        return max;
+    else
+        return value;
+}
+
 struct Vec3
 {
     float x;
@@ -752,10 +767,9 @@ Mat4 PerspectiveProjMat4(float fovY, float width, float height, float nearClip, 
     return res;
 }
 
-Mat4 LookatMat4(Vec3 eye, Vec3 at)
+Mat4 LookatMat4(Vec3 eye, Vec3 at, Vec3 up)
 {
     // based on LearnOpenGL/Getting started/Camera
-    Vec3 up = { 0.0f, 1.0f, 0.0f };
     Vec3 zAxis = Normalize(eye - at);
     Vec3 xAxis = Normalize(Cross(up, zAxis));
     Vec3 yAxis = Cross(zAxis, xAxis);
@@ -874,7 +888,8 @@ void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeigh
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: fps flying camera
+// TODO: use high res deltatime for frame rate independent cam movement
+// TODO: clean up fps camera code
 // TODO: a generated line grid
 // TODO: get a sample .obj file
 // TODO: load data from .obj file
@@ -929,12 +944,20 @@ int main()
 
     ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
 
-    //Vec3 position = { 200.0f, 200.0f, -1.0f };
-    //Vec3 scale = { 100.0f, 100.0f, 1.0f };
     Vec3 position = { 0.0f, 0.0f, -1.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
     BasicColorShaderData shaderData = {};
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+
+    Vec3 camPosition = { 0.0f, 0.0f, 2.0f };
+    Vec3 camFront = { 0.0f, 0.0f, -1.0f };
+    Vec3 camUp = { 0.0f, 1.0f, 0.0f };
+    float camMoveSpeed = 0.1f;
+    float camLookSpeed = 0.1f;
+    float camYaw = -90.0f; // 0 would start with the cam looking to the right
+    float camPitch = 0.0f;
+    bool camControlOn = true;
+    ShowCursor(FALSE);
 
     ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
     D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
@@ -947,7 +970,8 @@ int main()
         .moveLeft     = { .key = Vkey::Q },
         .moveRight    = { .key = Vkey::D },
         .moveDown     = { .key = Vkey::A },
-        .moveUp       = { .key = Vkey::Space }
+        .moveUp       = { .key = Vkey::Space },
+        .devToggle    = { .key = Vkey::F1 }
     };
 
     ShowWindow(window);
@@ -962,27 +986,68 @@ int main()
         if(UpdateDx11ViewportForWindow(&viewport, window))
             ResizeDx11Backbuffer(&backbuffer, (int)viewport.Width, (int)viewport.Height, &dx);
 
-        //Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
-        //shaderData.xformMat = orthoProjMat * modelMat;
-        Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
-        Mat4 viewMat = LookatMat4({ 0.0f, 0.0f, 2.0f }, { 0.0f, 0.0f, 0.0f });
-        shaderData.xformMat = perspectiveProjMat * viewMat * modelMat;
+        if(input.devToggle.keyDownTransitionCount)
+        {
+            camControlOn = !camControlOn;
+            if(camControlOn)
+            {
+                ShowCursor(FALSE);
+                printf("turned cam control on\n");
+            }
+            else
+            {
+                ShowCursor(TRUE);
+                printf("turned cam control off\n");
+            }
+        }
+
+        if(camControlOn)
+        {
+            POINT mouseTrapPoint = {
+                .x = (int)viewport.Width / 2,
+                .y = (int)viewport.Height / 2
+            };
+            ClientToScreen(window, &mouseTrapPoint);
+            SetCursorPos(mouseTrapPoint.x, mouseTrapPoint.y);
+        }
 
         if(input.moveForward.isKeyDown)
-        {
-            printf("moving forward\n");
-        }
+            camPosition = camPosition + (camFront * camMoveSpeed);
 
         if(input.moveBackward.isKeyDown)
-        {
-            printf("moving backward\n");
-        }
+            camPosition = camPosition - (camFront * camMoveSpeed);
 
-        if(input.moveUp.keyDownTransitionCount > 0)
-        {
-            printf("pressed space\n");
-        }
+        if(input.moveLeft.isKeyDown)
+            camPosition = camPosition - (Normalize(Cross(camFront, camUp)) * camMoveSpeed);
+
+        if(input.moveRight.isKeyDown)
+            camPosition = camPosition + (Normalize(Cross(camFront, camUp)) * camMoveSpeed);
+
+        if(input.moveUp.isKeyDown)
+            camPosition.y += camMoveSpeed;
+        
+        if(input.moveDown.isKeyDown)
+            camPosition.y -= camMoveSpeed;
+
+        if(input.mouseMoveX != 0)
+            camYaw += input.mouseMoveX * camLookSpeed;
+
+        if(input.mouseMoveY != 0)
+            camPitch -= input.mouseMoveY * camLookSpeed;
+
+        camPitch = Clamp(-89.0f, 89.0f, camPitch);
+
         printf("mouse pos: x = %d, y = %d | move: x = %d, y = %d\n", input.mousePosX, input.mousePosY, input.mouseMoveX, input.mouseMoveY);
+
+        Vec3 dir = {};
+        dir.x = cosf(toRadians(camYaw)) * cosf(toRadians(camPitch));
+        dir.y = sin(toRadians(camPitch));
+        dir.z = sin(toRadians(camYaw)) * cosf(toRadians(camPitch));
+        camFront = Normalize(dir);
+
+        Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
+        Mat4 viewMat = LookatMat4(camPosition, camPosition + camFront, camUp);
+        shaderData.xformMat = perspectiveProjMat * viewMat * modelMat;
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
