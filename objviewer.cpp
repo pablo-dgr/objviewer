@@ -883,13 +883,142 @@ void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeigh
     *backbuffer = InitDx11Backbuffer(dx);
 }
 
+uint64_t GetTicks()
+{
+    LARGE_INTEGER counter = {};
+    QueryPerformanceCounter(&counter);
+    return counter.QuadPart;
+}
+
+uint64_t GetTickFrequency()
+{
+    LARGE_INTEGER freq = {};
+    QueryPerformanceFrequency(&freq);
+    return freq.QuadPart;
+}
+
+double TicksToSeconds(uint64_t ticks)
+{
+    static uint64_t freq = GetTickFrequency();
+    return (double)ticks / (double)freq;
+}
+
+struct Timer
+{
+    uint64_t startTicks;
+    uint64_t lastTicks;
+    double elapsedTime;
+    double deltaTime;
+};
+
+Timer CreateTimer()
+{
+    uint64_t currentTicks = GetTicks();
+    return {
+        .startTicks = currentTicks,
+        .lastTicks = currentTicks
+    };
+}
+
+void UpdateTimer(Timer* timer)
+{
+    uint64_t currentTicks = GetTicks();
+    uint64_t deltaTicks = currentTicks - timer->lastTicks;
+    uint64_t elapsedTicks = currentTicks - timer->startTicks;
+
+    timer->deltaTime = TicksToSeconds(deltaTicks);
+    timer->elapsedTime = TicksToSeconds(elapsedTicks);
+    timer->lastTicks = currentTicks;
+}
+
+struct FpsCam
+{
+    Vec3 position;
+    Vec3 front;
+    Vec3 up;
+    float moveSpeed;
+    float lookSpeed;
+    float pitch;
+    float yaw;
+    bool isControlOn;
+};
+
+FpsCam CreateFpsCam(Vec3 position, float moveSpeed, float lookSpeed)
+{
+    return {
+        .position = position,
+        .front = { 0.0f, 0.0f, -1.0f },
+        .up = { 0.0f, 1.0f, 0.0f },
+        .moveSpeed = moveSpeed,
+        .lookSpeed = lookSpeed,
+        .yaw = -89.0f // // 0 would start with the cam looking to the right
+    };
+}
+
+void UpdateFpsCam(FpsCam* cam, Input* input, float deltaTime)
+{
+    if(input->moveForward.isKeyDown)
+        cam->position = cam->position + (cam->front * cam->moveSpeed * deltaTime);
+
+    if(input->moveBackward.isKeyDown)
+        cam->position = cam->position - (cam->front * cam->moveSpeed * deltaTime);
+
+    if(input->moveLeft.isKeyDown)
+        cam->position = cam->position - (Normalize(Cross(cam->front, cam->up)) * cam->moveSpeed * deltaTime);
+
+    if(input->moveRight.isKeyDown)
+        cam->position = cam->position + (Normalize(Cross(cam->front, cam->up)) * cam->moveSpeed * deltaTime);
+
+    if(input->moveUp.isKeyDown)
+        cam->position.y += (cam->moveSpeed * deltaTime);
+    
+    if(input->moveDown.isKeyDown)
+        cam->position.y -= (cam->moveSpeed * deltaTime);
+
+    if(input->mouseMoveX != 0)
+        cam->yaw += (input->mouseMoveX * cam->lookSpeed * deltaTime);
+
+    if(input->mouseMoveY != 0)
+        cam->pitch -= (input->mouseMoveY * cam->lookSpeed * deltaTime);
+
+    cam->pitch = Clamp(-89.0f, 89.0f, cam->pitch);
+
+    Vec3 dir = {};
+    dir.x = cosf(toRadians(cam->yaw)) * cosf(toRadians(cam->pitch));
+    dir.y = sin(toRadians(cam->pitch));
+    dir.z = sin(toRadians(cam->yaw)) * cosf(toRadians(cam->pitch));
+    cam->front = Normalize(dir);
+}
+
+Mat4 CreateViewMatForFpsCam(FpsCam* cam)
+{
+    return LookatMat4(cam->position, cam->position + cam->front, cam->up);
+}
+
+void ToggleCamControl(FpsCam* cam, bool isOn)
+{
+    cam->isControlOn = isOn;
+    if(isOn)
+        ShowCursor(FALSE);
+    else
+        ShowCursor(TRUE);
+}
+
+void TrapCursorInWindow(HWND window, int windowWidth, int windowHeight)
+{
+    POINT mouseTrapPoint = {
+        .x = windowWidth / 2,
+        .y = windowHeight / 2
+    };
+    ClientToScreen(window, &mouseTrapPoint);
+    SetCursorPos(mouseTrapPoint.x, mouseTrapPoint.y);
+}
+
 // GOAL: 
 // --------
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: use high res deltatime for frame rate independent cam movement
-// TODO: clean up fps camera code
 // TODO: a generated line grid
 // TODO: get a sample .obj file
 // TODO: load data from .obj file
@@ -949,15 +1078,8 @@ int main()
     BasicColorShaderData shaderData = {};
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
-    Vec3 camPosition = { 0.0f, 0.0f, 2.0f };
-    Vec3 camFront = { 0.0f, 0.0f, -1.0f };
-    Vec3 camUp = { 0.0f, 1.0f, 0.0f };
-    float camMoveSpeed = 0.1f;
-    float camLookSpeed = 0.1f;
-    float camYaw = -90.0f; // 0 would start with the cam looking to the right
-    float camPitch = 0.0f;
-    bool camControlOn = true;
-    ShowCursor(FALSE);
+    FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f);
+    ToggleCamControl(&cam, true);
 
     ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
     D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
@@ -974,6 +1096,8 @@ int main()
         .devToggle    = { .key = Vkey::F1 }
     };
 
+    Timer timer = CreateTimer();
+
     ShowWindow(window);
     while(true)
     {
@@ -987,66 +1111,16 @@ int main()
             ResizeDx11Backbuffer(&backbuffer, (int)viewport.Width, (int)viewport.Height, &dx);
 
         if(input.devToggle.keyDownTransitionCount)
+            ToggleCamControl(&cam, !cam.isControlOn);
+
+        if(cam.isControlOn)
         {
-            camControlOn = !camControlOn;
-            if(camControlOn)
-            {
-                ShowCursor(FALSE);
-                printf("turned cam control on\n");
-            }
-            else
-            {
-                ShowCursor(TRUE);
-                printf("turned cam control off\n");
-            }
+            TrapCursorInWindow(window, (int)viewport.Width, (int)viewport.Height);
+            UpdateFpsCam(&cam, &input, (float)timer.deltaTime);
         }
-
-        if(camControlOn)
-        {
-            POINT mouseTrapPoint = {
-                .x = (int)viewport.Width / 2,
-                .y = (int)viewport.Height / 2
-            };
-            ClientToScreen(window, &mouseTrapPoint);
-            SetCursorPos(mouseTrapPoint.x, mouseTrapPoint.y);
-        }
-
-        if(input.moveForward.isKeyDown)
-            camPosition = camPosition + (camFront * camMoveSpeed);
-
-        if(input.moveBackward.isKeyDown)
-            camPosition = camPosition - (camFront * camMoveSpeed);
-
-        if(input.moveLeft.isKeyDown)
-            camPosition = camPosition - (Normalize(Cross(camFront, camUp)) * camMoveSpeed);
-
-        if(input.moveRight.isKeyDown)
-            camPosition = camPosition + (Normalize(Cross(camFront, camUp)) * camMoveSpeed);
-
-        if(input.moveUp.isKeyDown)
-            camPosition.y += camMoveSpeed;
-        
-        if(input.moveDown.isKeyDown)
-            camPosition.y -= camMoveSpeed;
-
-        if(input.mouseMoveX != 0)
-            camYaw += input.mouseMoveX * camLookSpeed;
-
-        if(input.mouseMoveY != 0)
-            camPitch -= input.mouseMoveY * camLookSpeed;
-
-        camPitch = Clamp(-89.0f, 89.0f, camPitch);
-
-        printf("mouse pos: x = %d, y = %d | move: x = %d, y = %d\n", input.mousePosX, input.mousePosY, input.mouseMoveX, input.mouseMoveY);
-
-        Vec3 dir = {};
-        dir.x = cosf(toRadians(camYaw)) * cosf(toRadians(camPitch));
-        dir.y = sin(toRadians(camPitch));
-        dir.z = sin(toRadians(camYaw)) * cosf(toRadians(camPitch));
-        camFront = Normalize(dir);
 
         Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
-        Mat4 viewMat = LookatMat4(camPosition, camPosition + camFront, camUp);
+        Mat4 viewMat = CreateViewMatForFpsCam(&cam);
         shaderData.xformMat = perspectiveProjMat * viewMat * modelMat;
 
         dx.context->RSSetViewports(1, &viewport);
@@ -1067,7 +1141,8 @@ int main()
         dx.context->Draw(ARRAY_LEN(vertices), 0);
 
         dx.swapchain->Present(1, 0);
-    }    
+        UpdateTimer(&timer);
+    }
 
     basicColorCBuffer->Release();
 
