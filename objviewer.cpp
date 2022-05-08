@@ -836,6 +836,7 @@ Mat4 RotateEulerZMat4(float angleRads)
 struct BasicColorShaderData
 {
     Mat4 xformMat;
+    Vec4 color;
 };
 CHECK_CBUFFER_ALIGNMENT(BasicColorShaderData);
 
@@ -1014,12 +1015,78 @@ void TrapCursorInWindow(HWND window, int windowWidth, int windowHeight)
     SetCursorPos(mouseTrapPoint.x, mouseTrapPoint.y);
 }
 
+void DrawLine(Vec3 position, Vec3 scale, float yRotation, 
+    const Mat4& projMat, const Mat4 viewMat, ID3D11Buffer* cBuffer, Dx11* dx)
+{
+    BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(yRotation));
+    shaderData.xformMat = projMat * viewMat * modelMat;
+    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    dx->context->Draw(2, 0);
+}
+
+void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
+    ID3D11InputLayout* inputLayout, ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer,
+    const Mat4& projMat, const Mat4& viewMat)
+{
+    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    dx->context->VSSetShader(vs, nullptr, 0);
+    dx->context->PSSetShader(ps, nullptr, 0);
+
+    int nrOfXLines = 1 + (zSquaresHalf * 2);
+    int nrOfZLines = 1 + (xSquaresHalf * 2);
+
+    // draw lines parallel to x-axis
+    for(int i = 0; i < nrOfXLines; i++) {
+        Vec3 position = {};
+        position.z = (float)i;
+        position.z -= (float)((nrOfXLines - 1) / 2);
+        float xLineLen = (float)(nrOfZLines - 1);
+        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, projMat, viewMat, cBuffer, dx);
+    }
+
+    // draw lines parallel to z-axis
+    for(int i = 0; i < nrOfZLines; i++) {
+        Vec3 position = {};
+        position.x = (float)i;
+        position.x -= (float)((nrOfZLines - 1) / 2);
+        float zLineLen = (float)(nrOfXLines - 1);
+        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, projMat, viewMat, cBuffer, dx);
+    }
+
+}
+
+void DrawTriangle(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
+    ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer, const Mat4& projMat, const Mat4& viewMat)
+{
+    Vec3 position = {};
+    Vec3 scale = { 1.0f, 1.0f, 1.0f };
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+
+    BasicColorShaderData shaderData = {
+        .xformMat = projMat * viewMat * modelMat,
+        .color = { 0.0f, 0.9f, 0.1f, 1.0f }
+    };
+    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx->context->VSSetShader(vs, nullptr, 0);
+    dx->context->PSSetShader(ps, nullptr, 0);
+
+    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    dx->context->Draw(3, 0);
+}
+
 // GOAL: 
 // --------
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: a generated line grid
+// TODO: add depth buffer & testing
 // TODO: get a sample .obj file
 // TODO: load data from .obj file
 // TODO: render the loaded model data
@@ -1049,8 +1116,14 @@ int main()
         { -0.5f, -0.5f, 0.0f },
         {  0.5f, -0.5f, 0.0f }
     };
-
     Dx11VertexBuffer vertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), 3 * sizeof(float), 0, &dx);
+
+    Vec3 lineVertices[] = {
+        { -0.5f, 0.0f, 0.0f },
+        {  0.5f, 0.0f, 0.0f }
+    };
+    Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
+
     String vsCode = ReadAllTextFromFile("res/basiccolorvs.hlsl");
     ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
     ID3D11VertexShader* vs = nullptr;
@@ -1073,15 +1146,10 @@ int main()
 
     ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
 
-    Vec3 position = { 0.0f, 0.0f, -1.0f };
-    Vec3 scale = { 1.0f, 1.0f, 1.0f };
-    BasicColorShaderData shaderData = {};
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
-
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f);
     ToggleCamControl(&cam, true);
 
-    ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(shaderData), &dx);
+    ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(BasicColorShaderData), &dx);
     D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
 
     SetupRawMouseInput();
@@ -1121,24 +1189,16 @@ int main()
 
         Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
         Mat4 viewMat = CreateViewMatForFpsCam(&cam);
-        shaderData.xformMat = perspectiveProjMat * viewMat * modelMat;
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
         dx.context->OMSetRenderTargets(1, &backbuffer.view, nullptr);
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
 
-        dx.context->IASetVertexBuffers(0, 1, &vertexBuffer.buffer, &vertexBuffer.stride, &vertexBuffer.byteOffset);
-        dx.context->IASetInputLayout(inputLayout);
-        dx.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        dx.context->VSSetShader(vs, nullptr, 0);
-        dx.context->PSSetShader(ps, nullptr, 0);
+        DrawTriangle(&dx, &vertexBuffer, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
 
-        UploadDataToConstantBuffer(basicColorCBuffer, &shaderData, sizeof(shaderData), &dx);
-        dx.context->VSSetConstantBuffers(0, 1, &basicColorCBuffer);
-
-        // TODO: put vertex count somewhere else?
-        dx.context->Draw(ARRAY_LEN(vertices), 0);
+        DrawLineGrid(4, 4, &dx, &lineVertexBuffer, inputLayout, vs, ps, 
+            basicColorCBuffer, perspectiveProjMat, viewMat);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
