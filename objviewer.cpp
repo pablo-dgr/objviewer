@@ -869,14 +869,14 @@ void UploadDataToConstantBuffer(ID3D11Buffer* cBuffer, void* data, UINT dataByte
     dx->context->Unmap(cBuffer, 0);
 }
 
-void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, int newWidth, int newHeight, Dx11* dx)
+void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, UINT newWidth, UINT newHeight, Dx11* dx)
 {
     dx->context->OMSetRenderTargets(0, 0, 0);
     FreeDx11Backbuffer(backbuffer);
     HRESULT res = dx->swapchain->ResizeBuffers(
         2,
-        (UINT)newWidth,
-        (UINT)newHeight,
+        newWidth,
+        newHeight,
         DXGI_FORMAT_R8G8B8A8_UNORM,
         0
     );
@@ -1062,7 +1062,7 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
 void DrawTriangle(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
     ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer, const Mat4& projMat, const Mat4& viewMat)
 {
-    Vec3 position = {};
+    Vec3 position = { 0.0f, 0.0f, -0.5f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
@@ -1081,12 +1081,78 @@ void DrawTriangle(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* i
     dx->context->Draw(3, 0);
 }
 
+struct Dx11DepthStencilBuffer
+{
+    ID3D11Texture2D* buffer;
+    ID3D11DepthStencilView* view;
+};
+
+Dx11DepthStencilBuffer CreateDx11DepthStencilBuffer(UINT width, UINT height, Dx11* dx)
+{
+    D3D11_TEXTURE2D_DESC dsBufferDesc = {
+        .Width = width,
+        .Height = height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_D24_UNORM_S8_UINT,
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0
+        },
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_DEPTH_STENCIL
+    };
+
+    ID3D11Texture2D* dsBuffer = nullptr;
+    HRESULT res = dx->device->CreateTexture2D(&dsBufferDesc, nullptr, &dsBuffer);
+    ASSERT(res == S_OK);
+
+    ID3D11DepthStencilView* dsBufferView = nullptr;
+    res = dx->device->CreateDepthStencilView(dsBuffer, nullptr, &dsBufferView);
+    ASSERT(res == S_OK);
+
+    return {
+        .buffer = dsBuffer,
+        .view = dsBufferView
+    };
+}
+
+void FreeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer)
+{
+    dsBuffer->buffer->Release();
+    dsBuffer->view->Release();
+    *dsBuffer = {};
+}
+
+void ResizeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer, UINT newWidth, UINT newHeight, Dx11* dx)
+{
+    dx->context->OMSetRenderTargets(0, 0, 0);
+    FreeDx11DepthStencilBuffer(dsBuffer);
+    *dsBuffer = CreateDx11DepthStencilBuffer(newWidth, newHeight, dx);
+}
+
+ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
+{
+    D3D11_DEPTH_STENCIL_DESC stateDesc = {
+        .DepthEnable = TRUE,
+        .DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL,
+        .DepthFunc = D3D11_COMPARISON_LESS,
+        .StencilEnable = FALSE,
+        .StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK,
+        .StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK
+    };
+
+    ID3D11DepthStencilState* dsState = nullptr;
+    HRESULT res = dx->device->CreateDepthStencilState(&stateDesc, &dsState);
+    ASSERT(res == S_OK);
+    return dsState;
+}
+
 // GOAL: 
 // --------
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // --------
-// TODO: add depth buffer & testing
 // TODO: get a sample .obj file
 // TODO: load data from .obj file
 // TODO: render the loaded model data
@@ -1107,6 +1173,9 @@ int main()
         return -1;
 
     Dx11Backbuffer backbuffer = InitDx11Backbuffer(&dx);
+    D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
+    Dx11DepthStencilBuffer dsBuffer = CreateDx11DepthStencilBuffer((UINT)viewport.Width, (UINT)viewport.Height, &dx);
+    ID3D11DepthStencilState* dsState = CreateDx11DepthStencilState(&dx);
     float clearColor[] = { 0.3f, 0.4f, 0.9f, 1.0f };
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
@@ -1116,7 +1185,7 @@ int main()
         { -0.5f, -0.5f, 0.0f },
         {  0.5f, -0.5f, 0.0f }
     };
-    Dx11VertexBuffer vertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), 3 * sizeof(float), 0, &dx);
+    Dx11VertexBuffer triangleVertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), 3 * sizeof(float), 0, &dx);
 
     Vec3 lineVertices[] = {
         { -0.5f, 0.0f, 0.0f },
@@ -1150,7 +1219,6 @@ int main()
     ToggleCamControl(&cam, true);
 
     ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(BasicColorShaderData), &dx);
-    D3D11_VIEWPORT viewport = GetDx11ViewportForWindow(window);
 
     SetupRawMouseInput();
 
@@ -1176,7 +1244,10 @@ int main()
             break;
 
         if(UpdateDx11ViewportForWindow(&viewport, window))
-            ResizeDx11Backbuffer(&backbuffer, (int)viewport.Width, (int)viewport.Height, &dx);
+        {
+            ResizeDx11Backbuffer(&backbuffer, (UINT)viewport.Width, (UINT)viewport.Height, &dx);
+            ResizeDx11DepthStencilBuffer(&dsBuffer, (UINT)viewport.Width, (UINT)viewport.Height, &dx);
+        }
 
         if(input.devToggle.keyDownTransitionCount)
             ToggleCamControl(&cam, !cam.isControlOn);
@@ -1192,10 +1263,12 @@ int main()
 
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
-        dx.context->OMSetRenderTargets(1, &backbuffer.view, nullptr);
+        dx.context->OMSetRenderTargets(1, &backbuffer.view, dsBuffer.view);
+        dx.context->OMSetDepthStencilState(dsState, 1);
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
+        dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawTriangle(&dx, &vertexBuffer, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawTriangle(&dx, &triangleVertexBuffer, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
 
         DrawLineGrid(4, 4, &dx, &lineVertexBuffer, inputLayout, vs, ps, 
             basicColorCBuffer, perspectiveProjMat, viewMat);
@@ -1205,7 +1278,6 @@ int main()
     }
 
     basicColorCBuffer->Release();
-
     inputLayout->Release();
 
     ps->Release();
@@ -1216,8 +1288,11 @@ int main()
     vsByteCode->Release();
     FreeString(&vsCode);
 
-    FreeDx11VertexBuffer(&vertexBuffer);
+    FreeDx11VertexBuffer(&lineVertexBuffer);
+    FreeDx11VertexBuffer(&triangleVertexBuffer);
     rasterizerState->Release();
+    dsState->Release();
+    FreeDx11DepthStencilBuffer(&dsBuffer);
     FreeDx11Backbuffer(&backbuffer);
     FreeDx11(&dx);
     DestroyWindow(window);
