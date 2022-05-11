@@ -1148,22 +1148,40 @@ ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
     return dsState;
 }
 
+void LoadModelFromObjFile(const char* filename)
+{
+    // WaveFront Obj file spec important bits:
+    // =============================================
+    //
+    // ref: https://en.wikipedia.org/wiki/Wavefront_.obj_file
+    //
+    // - line starts with #        = comment
+    // - line starts with v        = vertex
+    //          -> followed by x,y,z with optional w
+    // - line starts with vn       = vertex normal
+    // - line starts with vt       = vertex texture coords
+    //          -> followed by u,v with optional w
+    // - line starts with f        = polygon face
+    //          -> defined by a list of indexes into previous v, vt, vn data; in that order
+    //          -> index starts at 1
+    //          -> index can be negative, indexing must be done from the back
+    //          -> example: v/vt/vn = 1/12/-2
+    // =============================================
+}
+
 // GOAL: 
-// --------
+// =============================================
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
-// --------
-// TODO: get a sample .obj file
+// =============================================
 // TODO: load data from .obj file
 // TODO: render the loaded model data
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
-
 int main()
 {
     int windowWidth = 1280;
     int windowHeight = 720;
-
     HWND window = InitWindow(windowWidth, windowHeight, "objviewer");
     if(window == nullptr)
         return -1;
