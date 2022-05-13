@@ -1148,8 +1148,76 @@ ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
     return dsState;
 }
 
+struct StringView
+{
+    const char* start;
+    size_t len;
+};
+
+struct StringReader
+{
+    String* string;
+    size_t pos;
+};
+
+StringView ReadLine(StringReader* reader)
+{
+    if(reader->pos == reader->string->len)
+        return {};
+
+    const char* start = reader->string->data + reader->pos;
+    char c = 0;
+    size_t len = 0;
+    while(reader->pos + len < reader->string->len && (c = start[len]) != '\0') {
+        len++;
+        if(c == '\n' || c == '\r\n')
+            break;
+    }
+    reader->pos += len;
+    
+    return {
+        .start = start,
+        .len = len
+    };
+}
+
 void LoadModelFromObjFile(const char* filename)
 {
+    String objText = ReadAllTextFromFile(filename);
+
+    StringReader reader = { .string = &objText };
+    StringView line = {};
+    int lineCount = 1;
+    while((line = ReadLine(&reader)).len > 0) {
+        if(line.start[0] == '#')
+        {
+            printf("comment line %d\n", lineCount);
+        }
+        else if(line.start[0] == 'v' && line.start[1] == ' ')
+        {
+            printf("vertex line %d\n", lineCount);
+        }
+        else if(line.start[0] == 'v' && line.start[1] == 't')
+        {
+            printf("tex coord line %d\n", lineCount);
+        }
+        else if(line.start[0] == 'v' && line.start[1] == 'n')
+        {
+            printf("normal line %d\n", lineCount);
+        }
+        else if(line.start[0] == 'f')
+        {
+            printf("poly face line %d\n", lineCount);
+        }
+        else
+        {
+            printf("unkown line %d\n", lineCount);
+        }
+        lineCount++;
+    }
+
+    FreeString(&objText);
+
     // WaveFront Obj file spec important bits:
     // =============================================
     //
@@ -1249,6 +1317,8 @@ int main()
         .moveUp       = { .key = Vkey::Space },
         .devToggle    = { .key = Vkey::F1 }
     };
+
+    LoadModelFromObjFile("res/teapot.obj");
 
     Timer timer = CreateTimer();
 
