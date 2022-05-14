@@ -1,8 +1,9 @@
-#include <stdio.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
@@ -573,6 +574,12 @@ float Clamp(float min, float max, float value)
     else
         return value;
 }
+
+struct Vec2
+{
+    float x;
+    float y;
+};
 
 struct Vec3
 {
@@ -1156,19 +1163,19 @@ struct StringView
 
 struct StringReader
 {
-    String* string;
+    StringView string;
     size_t pos;
 };
 
 StringView ReadLine(StringReader* reader)
 {
-    if(reader->pos == reader->string->len)
+    if(reader->pos == reader->string.len)
         return {};
 
-    const char* start = reader->string->data + reader->pos;
+    const char* start = reader->string.start + reader->pos;
     char c = 0;
     size_t len = 0;
-    while(reader->pos + len < reader->string->len && (c = start[len]) != '\0') {
+    while(reader->pos + len < reader->string.len && (c = start[len]) != '\0') {
         len++;
         if(c == '\n' || c == '\r\n')
             break;
@@ -1181,40 +1188,214 @@ StringView ReadLine(StringReader* reader)
     };
 }
 
+enum class ObjLineType
+{
+    Comment,
+    Vertex,
+    TexCoord,
+    Normal,
+    Face,
+    Unknown
+};
+
+ObjLineType GetObjLineType(StringView line)
+{
+    char c0 = line.start[0];
+    char c1 = line.start[1];
+
+    switch(c0) {
+        case '#':
+        {
+            return ObjLineType::Comment;
+        }
+        case 'v':
+        {
+            if(c1 == ' ')
+                return ObjLineType::Vertex;
+            else if(c1 == 't')
+                return ObjLineType::TexCoord;
+            else
+                return ObjLineType::Normal;
+        }
+        case 'f':
+        {
+            return ObjLineType::Face;
+        }
+        default:
+        {
+            return ObjLineType::Unknown;
+        }
+    }
+}
+
+struct ObjStats
+{
+    int positionCount;
+    int texCoordCount;
+    int normalCount;
+    int indicesPerVertexCount;
+    int faceCount;
+};
+
+StringView SkipObjLineStart(StringView line)
+{
+    size_t offset = 0;
+    while(line.start[offset] == 'v' || line.start[offset] == 't' || line.start[offset] == 'n' || 
+        line.start[offset] == 'f' || line.start[offset] == ' ')
+    {
+        offset++;
+    }
+    
+    return {
+        .start = line.start + offset,
+        .len = line.len - offset
+    };
+}
+
+int GetIndicesPerVertexCountFromObjLine(StringView line)
+{
+    line = SkipObjLineStart(line);
+    int count = 1;
+    size_t i = 0;
+    char c = 0;
+    while((c = line.start[i++]) != ' ') {
+        if(c == '/')
+            count++;
+    }
+    return count;
+}
+
+ObjStats GetObjStats(String objText)
+{
+    StringReader reader = { .string = { .start = objText.data, .len = objText.len } };
+    StringView line = {};
+    ObjStats stats = {};
+
+    while((line = ReadLine(&reader)).len > 0) {
+        ObjLineType lineType = GetObjLineType(line);
+        switch(lineType) {
+            case ObjLineType::Vertex:
+                stats.positionCount++;
+                break;
+            case ObjLineType::TexCoord:
+                stats.texCoordCount++;
+                break;
+            case ObjLineType::Normal:
+                stats.normalCount++;
+                break;
+            case ObjLineType::Face:
+                if(stats.faceCount == 0)
+                    stats.indicesPerVertexCount = GetIndicesPerVertexCountFromObjLine(line);
+                stats.faceCount++;
+                break;
+        }
+    }
+
+    return stats;
+}
+
+struct ObjData
+{
+    Vec3* positions;
+    Vec2* texCoords;
+    Vec3* normals;
+    int* indices;
+};
+
+ObjData AllocateObjData(ObjStats stats)
+{
+    ObjData data = {
+        .positions = (Vec3*)calloc(1, stats.positionCount * sizeof(Vec3)),
+        .indices = (int*)calloc(1, stats.faceCount * 3 * stats.indicesPerVertexCount)
+    };
+
+    ASSERT(data.positions != nullptr);
+    ASSERT(data.indices != nullptr);
+
+    if(stats.texCoordCount > 0) {
+        data.texCoords = (Vec2*)calloc(1, stats.texCoordCount * sizeof(Vec2));
+        ASSERT(data.texCoords != nullptr);
+    }
+    if(stats.normalCount > 0) {
+        data.normals = (Vec3*)calloc(1, stats.normalCount * sizeof(Vec3));
+        ASSERT(data.normals != nullptr);
+    }
+
+    return data;
+}
+
+Vec3 GetVec3FromObjLine(StringView line)
+{
+    line = SkipObjLineStart(line);
+
+    Vec3 vec = {};
+    char* parseAt = (char*)line.start;
+    vec.x = strtof(parseAt, &parseAt);
+    vec.y = strtof(parseAt, &parseAt);
+    vec.z = strtof(parseAt, &parseAt);
+
+    return vec;
+}
+
+Vec2 GetVec2FromObjLine(StringView line)
+{
+    line = SkipObjLineStart(line);
+
+    Vec2 vec = {};
+    char* parseAt = (char*)line.start;
+    vec.x = strtof(parseAt, &parseAt);
+    vec.y = strtof(parseAt, &parseAt);
+
+    return vec;
+}
+
+void GetIndicesFromObjLine(StringView line, int* indices, int* indicesWriteIndex)
+{
+    line = SkipObjLineStart(line);
+
+    char* parseAt = (char*)line.start;
+    while(parseAt[0] != '\n' && parseAt[0] != '\r\n') {
+        indices[(*indicesWriteIndex)++] = strtol(parseAt, &parseAt, 10);
+        while(parseAt[0] == '/' || parseAt[0] == ' ')
+            parseAt++;
+    }
+}
+
 void LoadModelFromObjFile(const char* filename)
 {
     String objText = ReadAllTextFromFile(filename);
 
-    StringReader reader = { .string = &objText };
+    StringReader reader = { .string = { .start = objText.data, .len = objText.len } };
     StringView line = {};
-    int lineCount = 1;
+
+    ObjStats stats = GetObjStats(objText);
+    ObjData data = AllocateObjData(stats);
+
+    int vertexWriteIndex = 0;
+    int texCoordWriteIndex = 0;
+    int normalWriteIndex = 0;
+    int indicesWriteIndex = 0;
+
     while((line = ReadLine(&reader)).len > 0) {
-        if(line.start[0] == '#')
-        {
-            printf("comment line %d\n", lineCount);
+        ObjLineType lineType = GetObjLineType(line);
+        switch(lineType) {
+            case ObjLineType::Vertex:
+                data.positions[vertexWriteIndex++] = GetVec3FromObjLine(line);
+                break;
+            case ObjLineType::TexCoord:
+                data.texCoords[texCoordWriteIndex++] = GetVec2FromObjLine(line);
+                break;
+            case ObjLineType::Normal:
+                data.normals[normalWriteIndex++] = GetVec3FromObjLine(line);
+                break;
+            case ObjLineType::Face:
+                GetIndicesFromObjLine(line, data.indices, &indicesWriteIndex);
+                break;
         }
-        else if(line.start[0] == 'v' && line.start[1] == ' ')
-        {
-            printf("vertex line %d\n", lineCount);
-        }
-        else if(line.start[0] == 'v' && line.start[1] == 't')
-        {
-            printf("tex coord line %d\n", lineCount);
-        }
-        else if(line.start[0] == 'v' && line.start[1] == 'n')
-        {
-            printf("normal line %d\n", lineCount);
-        }
-        else if(line.start[0] == 'f')
-        {
-            printf("poly face line %d\n", lineCount);
-        }
-        else
-        {
-            printf("unkown line %d\n", lineCount);
-        }
-        lineCount++;
     }
+
+    // TODO: prep extracted data for rendering using the indices
+    // TODO: free unneeded obj data afterwards
 
     FreeString(&objText);
 
