@@ -1235,6 +1235,7 @@ struct ObjStats
     int normalCount;
     int indicesPerVertexCount;
     int faceCount;
+    int vertexCount;
 };
 
 StringView SkipObjLineStart(StringView line)
@@ -1259,8 +1260,11 @@ int GetIndicesPerVertexCountFromObjLine(StringView line)
     size_t i = 0;
     char c = 0;
     while((c = line.start[i++]) != ' ') {
-        if(c == '/')
-            count++;
+        if(c == '/') {
+            char c2 = line.start[i + 1];
+            if(c2 >= '0' && c2 <= '9')
+                count++;
+        }
     }
     return count;
 }
@@ -1291,26 +1295,34 @@ ObjStats GetObjStats(String objText)
         }
     }
 
+    stats.vertexCount = stats.faceCount * 3;
     return stats;
 }
+
+struct ObjVertex
+{
+    int positionId;
+    int texCoordId;
+    int normalId;
+};
 
 struct ObjData
 {
     Vec3* positions;
     Vec2* texCoords;
     Vec3* normals;
-    int* indices;
+    ObjVertex* vertices;
 };
 
 ObjData AllocateObjData(ObjStats stats)
 {
     ObjData data = {
         .positions = (Vec3*)calloc(1, stats.positionCount * sizeof(Vec3)),
-        .indices = (int*)calloc(1, stats.faceCount * 3 * stats.indicesPerVertexCount)
+        .vertices = (ObjVertex*)calloc(1, stats.vertexCount * sizeof(ObjVertex))
     };
 
     ASSERT(data.positions != nullptr);
-    ASSERT(data.indices != nullptr);
+    ASSERT(data.vertices != nullptr);
 
     if(stats.texCoordCount > 0) {
         data.texCoords = (Vec2*)calloc(1, stats.texCoordCount * sizeof(Vec2));
@@ -1349,15 +1361,56 @@ Vec2 GetVec2FromObjLine(StringView line)
     return vec;
 }
 
-void GetIndicesFromObjLine(StringView line, int* indices, int* indicesWriteIndex)
+int SplitStringOnChar(StringView line, char delimiter, StringView* dest)
+{
+    int writeIndex = 0;
+    const char* nextStart = line.start;
+    size_t nextLen = 0;
+    for(int i = 0; i < line.len; i++) {
+        char c = line.start[i];
+        if(c == delimiter) {
+            dest[writeIndex++] = { .start = nextStart, .len = nextLen };
+            
+            while(line.start[(i + 1)] == delimiter && (i + 1) < line.len)
+                i++;
+
+        nextStart = line.start + (i + 1);
+            nextLen = 0;
+        } else {
+            nextLen++;
+        }
+    }
+    
+    dest[writeIndex++] = { .start = nextStart, .len = nextLen };
+
+    return writeIndex;
+}
+
+void GetVerticesFromObjLine(StringView line, ObjVertex* vertices, int* vertexWriteIndex)
 {
     line = SkipObjLineStart(line);
 
-    char* parseAt = (char*)line.start;
-    while(parseAt[0] != '\n' && parseAt[0] != '\r\n') {
-        indices[(*indicesWriteIndex)++] = strtol(parseAt, &parseAt, 10);
-        while(parseAt[0] == '/' || parseAt[0] == ' ')
-            parseAt++;
+    StringView vertexParts[3] = {};
+    int vertexPartCount = SplitStringOnChar(line, ' ', vertexParts);
+    for(int i = 0; i < vertexPartCount; i++) {
+        StringView vertexPart = vertexParts[i];
+        StringView indexParts[3] = {};
+        ObjVertex vertex = {};
+        SplitStringOnChar(vertexPart, '/', indexParts);
+        char* parseAt = nullptr;
+        if(indexParts[0].len > 0) {
+            parseAt = (char*)indexParts[0].start;
+            vertex.positionId = strtol(parseAt, &parseAt, 10);
+        }
+        if(indexParts[1].len > 0) {
+            parseAt = (char*)indexParts[1].start;
+            vertex.texCoordId = strtol(parseAt, &parseAt, 10);
+        }
+        if(indexParts[2].len > 0) {
+            parseAt = (char*)indexParts[2].start;
+            vertex.normalId = strtol(parseAt, &parseAt, 10);
+        }
+        vertices[(*vertexWriteIndex)++] = vertex;
     }
 }
 
@@ -1374,7 +1427,7 @@ void LoadModelFromObjFile(const char* filename)
     int vertexWriteIndex = 0;
     int texCoordWriteIndex = 0;
     int normalWriteIndex = 0;
-    int indicesWriteIndex = 0;
+    int verticesWriteIndex = 0;
 
     while((line = ReadLine(&reader)).len > 0) {
         ObjLineType lineType = GetObjLineType(line);
@@ -1389,7 +1442,7 @@ void LoadModelFromObjFile(const char* filename)
                 data.normals[normalWriteIndex++] = GetVec3FromObjLine(line);
                 break;
             case ObjLineType::Face:
-                GetIndicesFromObjLine(line, data.indices, &indicesWriteIndex);
+                GetVerticesFromObjLine(line, data.vertices, &verticesWriteIndex);
                 break;
         }
     }
