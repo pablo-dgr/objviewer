@@ -1066,10 +1066,10 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
 
 }
 
-void DrawTriangle(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
+void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexBuffer, unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
     ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer, const Mat4& projMat, const Mat4& viewMat)
 {
-    Vec3 position = { 0.0f, 0.0f, -0.5f };
+    Vec3 position = { 0.0f, 0.0f, 0.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
@@ -1085,7 +1085,7 @@ void DrawTriangle(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* i
 
     UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
     dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
-    dx->context->Draw(3, 0);
+    dx->context->Draw(vertexCount, 0);
 }
 
 struct Dx11DepthStencilBuffer
@@ -1228,15 +1228,17 @@ ObjLineType GetObjLineType(StringView line)
     }
 }
 
+constexpr int InvalidObjIndex = 0;
+
 struct ObjStats
 {
     int positionCount;
     int texCoordCount;
     int normalCount;
-    int indicesPerVertexCount;
-    int faceCount;
-    int vertexCount;
+    unsigned int faceCount;
+    unsigned int vertexCount;
 };
+
 
 StringView SkipObjLineStart(StringView line)
 {
@@ -1251,22 +1253,6 @@ StringView SkipObjLineStart(StringView line)
         .start = line.start + offset,
         .len = line.len - offset
     };
-}
-
-int GetIndicesPerVertexCountFromObjLine(StringView line)
-{
-    line = SkipObjLineStart(line);
-    int count = 1;
-    size_t i = 0;
-    char c = 0;
-    while((c = line.start[i++]) != ' ') {
-        if(c == '/') {
-            char c2 = line.start[i + 1];
-            if(c2 >= '0' && c2 <= '9')
-                count++;
-        }
-    }
-    return count;
 }
 
 ObjStats GetObjStats(String objText)
@@ -1288,8 +1274,6 @@ ObjStats GetObjStats(String objText)
                 stats.normalCount++;
                 break;
             case ObjLineType::Face:
-                if(stats.faceCount == 0)
-                    stats.indicesPerVertexCount = GetIndicesPerVertexCountFromObjLine(line);
                 stats.faceCount++;
                 break;
         }
@@ -1313,6 +1297,18 @@ struct ObjData
     Vec3* normals;
     ObjVertex* vertices;
 };
+
+void FreeObjData(ObjData* objData)
+{
+    if(objData->positions != nullptr)
+        free(objData->positions);
+    if(objData->texCoords != nullptr)
+        free(objData->texCoords);
+    if(objData->normals != nullptr)
+        free(objData->normals);
+
+    *objData = {};
+}
 
 ObjData AllocateObjData(ObjStats stats)
 {
@@ -1361,7 +1357,7 @@ Vec2 GetVec2FromObjLine(StringView line)
     return vec;
 }
 
-int SplitStringOnChar(StringView line, char delimiter, StringView* dest)
+int SplitStringOnChar(StringView line, char delimiter, bool collapseRepeatedDelimiters, StringView* dest)
 {
     int writeIndex = 0;
     const char* nextStart = line.start;
@@ -1371,8 +1367,10 @@ int SplitStringOnChar(StringView line, char delimiter, StringView* dest)
         if(c == delimiter) {
             dest[writeIndex++] = { .start = nextStart, .len = nextLen };
             
-            while(line.start[(i + 1)] == delimiter && (i + 1) < line.len)
-                i++;
+            if(collapseRepeatedDelimiters) {
+                while(line.start[(i + 1)] == delimiter && (i + 1) < line.len)
+                    i++;
+            }
 
         nextStart = line.start + (i + 1);
             nextLen = 0;
@@ -1391,12 +1389,12 @@ void GetVerticesFromObjLine(StringView line, ObjVertex* vertices, int* vertexWri
     line = SkipObjLineStart(line);
 
     StringView vertexParts[3] = {};
-    int vertexPartCount = SplitStringOnChar(line, ' ', vertexParts);
+    int vertexPartCount = SplitStringOnChar(line, ' ', true, vertexParts);
     for(int i = 0; i < vertexPartCount; i++) {
         StringView vertexPart = vertexParts[i];
         StringView indexParts[3] = {};
         ObjVertex vertex = {};
-        SplitStringOnChar(vertexPart, '/', indexParts);
+        SplitStringOnChar(vertexPart, '/', false, indexParts);
         char* parseAt = nullptr;
         if(indexParts[0].len > 0) {
             parseAt = (char*)indexParts[0].start;
@@ -1414,7 +1412,37 @@ void GetVerticesFromObjLine(StringView line, ObjVertex* vertices, int* vertexWri
     }
 }
 
-void LoadModelFromObjFile(const char* filename)
+size_t GetArrayIndexFromObjIndex(int objIndex, size_t arrayLen)
+{
+    if(objIndex > 0) {
+        return objIndex - 1;
+    }
+    else {
+        return arrayLen - objIndex;
+    }
+}
+
+struct ObjModel
+{
+    Vec3* positions;
+    Vec2* texCoords;
+    Vec3* normals;
+    unsigned int vertexCount;
+};
+
+void FreeObjModel(ObjModel* model)
+{
+    if(model->positions != nullptr)
+        free(model->positions);
+    if(model->texCoords != nullptr)
+        free(model->texCoords);
+    if(model->normals != nullptr)
+        free(model->normals);
+
+    *model = {};
+}
+
+ObjModel LoadModelFromObjFile(const char* filename)
 {
     String objText = ReadAllTextFromFile(filename);
 
@@ -1447,28 +1475,31 @@ void LoadModelFromObjFile(const char* filename)
         }
     }
 
-    // TODO: prep extracted data for rendering using the indices
-    // TODO: free unneeded obj data afterwards
+    bool hasTexCoords = data.vertices[0].texCoordId != InvalidObjIndex;
+    bool hasNormals = data.vertices[0].normalId != InvalidObjIndex;
 
+    ObjModel model = { .vertexCount = stats.vertexCount };
+    model.positions = (Vec3*)calloc(1, stats.vertexCount * sizeof(Vec3));
+
+    if(hasTexCoords)
+        model.texCoords = (Vec2*)calloc(1, stats.vertexCount * sizeof(Vec2));
+
+    if(hasNormals)
+        model.normals = (Vec3*)calloc(1, stats.vertexCount * sizeof(Vec3));
+
+    for(int i = 0; i < stats.vertexCount; i++) {
+        ObjVertex vertex = data.vertices[i];
+        model.positions[i] = data.positions[GetArrayIndexFromObjIndex(vertex.positionId, stats.vertexCount)];
+        if(hasTexCoords)
+            model.texCoords[i] = data.texCoords[GetArrayIndexFromObjIndex(vertex.texCoordId, stats.vertexCount)];
+        if(hasNormals)
+            model.normals[i] = data.normals[GetArrayIndexFromObjIndex(vertex.normalId, stats.vertexCount)];
+    }
+
+    FreeObjData(&data);
     FreeString(&objText);
 
-    // WaveFront Obj file spec important bits:
-    // =============================================
-    //
-    // ref: https://en.wikipedia.org/wiki/Wavefront_.obj_file
-    //
-    // - line starts with #        = comment
-    // - line starts with v        = vertex
-    //          -> followed by x,y,z with optional w
-    // - line starts with vn       = vertex normal
-    // - line starts with vt       = vertex texture coords
-    //          -> followed by u,v with optional w
-    // - line starts with f        = polygon face
-    //          -> defined by a list of indexes into previous v, vt, vn data; in that order
-    //          -> index starts at 1
-    //          -> index can be negative, indexing must be done from the back
-    //          -> example: v/vt/vn = 1/12/-2
-    // =============================================
+    return model;
 }
 
 // GOAL: 
@@ -1476,8 +1507,7 @@ void LoadModelFromObjFile(const char* filename)
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: load data from .obj file
-// TODO: render the loaded model data
+// TODO: use normals to implement phong shading on model
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
 int main()
@@ -1499,13 +1529,6 @@ int main()
     float clearColor[] = { 0.3f, 0.4f, 0.9f, 1.0f };
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
-
-    Vec3 vertices[] = {
-        {  0.0f,  0.5f, 0.0f },
-        { -0.5f, -0.5f, 0.0f },
-        {  0.5f, -0.5f, 0.0f }
-    };
-    Dx11VertexBuffer triangleVertexBuffer = CreateStaticDx11VertexBuffer(vertices, sizeof(vertices), 3 * sizeof(float), 0, &dx);
 
     Vec3 lineVertices[] = {
         { -0.5f, 0.0f, 0.0f },
@@ -1552,7 +1575,14 @@ int main()
         .devToggle    = { .key = Vkey::F1 }
     };
 
-    LoadModelFromObjFile("res/teapot.obj");
+    ObjModel model = LoadModelFromObjFile("res/monkey.obj");
+    Dx11VertexBuffer modelVertexBuffer = CreateStaticDx11VertexBuffer(
+        model.positions, 
+        model.vertexCount * sizeof(Vec3), 
+        sizeof(Vec3), 
+        0, 
+        &dx
+    );
 
     Timer timer = CreateTimer();
 
@@ -1590,14 +1620,16 @@ int main()
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawTriangle(&dx, &triangleVertexBuffer, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawModel(&dx, &modelVertexBuffer, model.vertexCount, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
 
-        DrawLineGrid(4, 4, &dx, &lineVertexBuffer, inputLayout, vs, ps, 
+        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, inputLayout, vs, ps, 
             basicColorCBuffer, perspectiveProjMat, viewMat);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
     }
+
+    FreeObjModel(&model);
 
     basicColorCBuffer->Release();
     inputLayout->Release();
@@ -1611,7 +1643,7 @@ int main()
     FreeString(&vsCode);
 
     FreeDx11VertexBuffer(&lineVertexBuffer);
-    FreeDx11VertexBuffer(&triangleVertexBuffer);
+    FreeDx11VertexBuffer(&modelVertexBuffer);
     rasterizerState->Release();
     dsState->Release();
     FreeDx11DepthStencilBuffer(&dsBuffer);
