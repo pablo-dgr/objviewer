@@ -409,18 +409,62 @@ Dx11VertexBuffer CreateStaticDx11VertexBuffer(void* data, size_t byteSize, UINT 
     };
 }
 
-ID3D11InputLayout* CreateDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
+enum class InputElType
+{
+    Position,
+    TexCoord,
+    Normal
+};
+
+D3D11_INPUT_ELEMENT_DESC CreateDx11InputElDesc(InputElType type, UINT slot, UINT byteOffset)
+{
+    switch(type) {
+        case InputElType::Position:
+        {
+            return {
+                .SemanticName = "POSITION",
+                .SemanticIndex = 0,
+                .Format = DXGI_FORMAT_R32G32B32_FLOAT,
+                .InputSlot = slot,
+                .AlignedByteOffset = byteOffset,
+                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
+                .InstanceDataStepRate = 0
+            };
+        }
+        case InputElType::TexCoord:
+        {
+            return {
+                .SemanticName = "TEXCOORD",
+                .SemanticIndex = 0,
+                .Format = DXGI_FORMAT_R32G32_FLOAT,
+                .InputSlot = slot,
+                .AlignedByteOffset = byteOffset,
+                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
+                .InstanceDataStepRate = 0
+            };
+        }
+        case InputElType::Normal:
+        {
+            return {
+                .SemanticName = "NORMAL",
+                .SemanticIndex = 0,
+                .Format = DXGI_FORMAT_R32G32B32_FLOAT,
+                .InputSlot = slot,
+                .AlignedByteOffset = byteOffset,
+                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
+                .InstanceDataStepRate = 0
+            };
+        }
+        default:
+            ASSERT(false);
+            return {};
+    }
+}
+
+ID3D11InputLayout* CreateBasicColorDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
 {
     D3D11_INPUT_ELEMENT_DESC inputElements[] = {
-        {
-            .SemanticName = "POSITION",
-            .SemanticIndex = 0,
-            .Format = DXGI_FORMAT_R32G32B32_FLOAT,
-            .InputSlot = 0,
-            .AlignedByteOffset = 0,
-            .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
-            .InstanceDataStepRate = 0
-        }
+        CreateDx11InputElDesc(InputElType::Position, 0, 0)
     };
 
     ID3D11InputLayout* inputLayout = nullptr;
@@ -1066,6 +1110,30 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
 
 }
 
+void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
+    ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer,
+    const Mat4& projMat, const Mat4& viewMat)
+{
+    Vec3 position = { 1.5f, 2.5f, 0.9f };
+    Vec3 scale = { 0.4f, 0.4f, 0.4f };
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+
+    BasicColorShaderData shaderData = { 
+        .xformMat = projMat * viewMat * modelMat,
+        .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
+    };
+    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx->context->VSSetShader(vs, nullptr, 0);
+    dx->context->PSSetShader(ps, nullptr, 0);
+
+
+    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    dx->context->Draw(36, 0);
+}
+
 void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexBuffer, unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
     ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer, const Mat4& projMat, const Mat4& viewMat)
 {
@@ -1502,11 +1570,73 @@ ObjModel LoadModelFromObjFile(const char* filename)
     return model;
 }
 
+static Vec3 cubeVertices[] = {
+    // back face
+    {  0.5f,  0.5f, -0.5f },
+    {  0.5f, -0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    { -0.5f,  0.5f, -0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    // front face
+    { -0.5f, -0.5f,  0.5f },
+    {  0.5f, -0.5f,  0.5f },
+    {  0.5f,  0.5f,  0.5f },
+
+    {  0.5f,  0.5f,  0.5f },
+    { -0.5f,  0.5f,  0.5f },
+    { -0.5f, -0.5f,  0.5f },
+
+    // left face
+    { -0.5f,  0.5f,  0.5f },
+    { -0.5f,  0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    { -0.5f, -0.5f, -0.5f },
+    { -0.5f, -0.5f,  0.5f },
+    { -0.5f,  0.5f,  0.5f },
+
+    // right face
+    {  0.5f, -0.5f, -0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    {  0.5f,  0.5f,  0.5f },
+
+    {  0.5f,  0.5f,  0.5f },
+    {  0.5f, -0.5f,  0.5f },
+    {  0.5f, -0.5f, -0.5f },
+
+    // bottom face    
+    { -0.5f, -0.5f, -0.5f },
+    {  0.5f, -0.5f, -0.5f },
+    {  0.5f, -0.5f,  0.5f },
+
+    {  0.5f, -0.5f,  0.5f },
+    { -0.5f, -0.5f,  0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    // top face
+    {  0.5f,  0.5f,  0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    { -0.5f,  0.5f, -0.5f },
+
+    { -0.5f,  0.5f, -0.5f },
+    { -0.5f,  0.5f,  0.5f },
+    {  0.5f,  0.5f,  0.5f }
+};
+
+static Vec3 lineVertices[] = {
+    { -0.5f, 0.0f, 0.0f },
+    {  0.5f, 0.0f, 0.0f }
+};
+
 // GOAL: 
 // =============================================
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
+// TODO: remove some duplicate code in object rendering
 // TODO: use normals to implement phong shading on model
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
@@ -1530,11 +1660,9 @@ int main()
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
 
-    Vec3 lineVertices[] = {
-        { -0.5f, 0.0f, 0.0f },
-        {  0.5f, 0.0f, 0.0f }
-    };
     Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
+
+    Dx11VertexBuffer cubeVertexBuffer = CreateStaticDx11VertexBuffer(cubeVertices, sizeof(cubeVertices), 3 * sizeof(float), 0, &dx);
 
     String vsCode = ReadAllTextFromFile("res/basiccolorvs.hlsl");
     ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
@@ -1556,7 +1684,7 @@ int main()
         &ps
     );
 
-    ID3D11InputLayout* inputLayout = CreateDx11InputLayout(&dx, vsByteCode);
+    ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, vsByteCode);
 
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f);
     ToggleCamControl(&cam, true);
@@ -1620,9 +1748,13 @@ int main()
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawModel(&dx, &modelVertexBuffer, model.vertexCount, inputLayout, vs, ps, basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawModel(&dx, &modelVertexBuffer, model.vertexCount, basicColorInputLayout, vs, ps, 
+            basicColorCBuffer, perspectiveProjMat, viewMat);
 
-        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, inputLayout, vs, ps, 
+        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, vs, ps, 
+            basicColorCBuffer, perspectiveProjMat, viewMat);
+
+        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, vs, ps, 
             basicColorCBuffer, perspectiveProjMat, viewMat);
 
         dx.swapchain->Present(1, 0);
@@ -1632,7 +1764,7 @@ int main()
     FreeObjModel(&model);
 
     basicColorCBuffer->Release();
-    inputLayout->Release();
+    basicColorInputLayout->Release();
 
     ps->Release();
     psByteCode->Release();
@@ -1642,6 +1774,7 @@ int main()
     vsByteCode->Release();
     FreeString(&vsCode);
 
+    FreeDx11VertexBuffer(&cubeVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
     FreeDx11VertexBuffer(&modelVertexBuffer);
     rasterizerState->Release();
