@@ -479,6 +479,25 @@ ID3D11InputLayout* CreateBasicColorDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCod
     return inputLayout;
 }
 
+ID3D11InputLayout* CreatePhongDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
+{
+    D3D11_INPUT_ELEMENT_DESC inputElements[] = {
+        CreateDx11InputElDesc(InputElType::Position, 0, 0),
+        CreateDx11InputElDesc(InputElType::Normal, 1, 0)
+    };
+
+    ID3D11InputLayout* inputLayout = nullptr;
+    HRESULT res = dx->device->CreateInputLayout(
+        inputElements,
+        ARRAY_LEN(inputElements),
+        vsByteCode->GetBufferPointer(),
+        vsByteCode->GetBufferSize(),
+        &inputLayout
+    );
+    ASSERT(res == S_OK);
+    return inputLayout;
+}
+
 struct String
 {
     const char* data;
@@ -891,6 +910,14 @@ struct BasicColorShaderData
 };
 CHECK_CBUFFER_ALIGNMENT(BasicColorShaderData);
 
+struct alignas(16) PhongShaderData
+{
+    Mat4 xformMat;
+    Vec4 color;
+    Vec3 lightPosition;
+};
+CHECK_CBUFFER_ALIGNMENT(PhongShaderData);
+
 ID3D11Buffer* CreateDx11ConstantBuffer(UINT dataByteSize, Dx11* dx)
 {
     D3D11_BUFFER_DESC cBufferDesc = {
@@ -1066,6 +1093,61 @@ void TrapCursorInWindow(HWND window, int windowWidth, int windowHeight)
     SetCursorPos(mouseTrapPoint.x, mouseTrapPoint.y);
 }
 
+struct Dx11Program
+{
+    ID3D11VertexShader* vs;
+    ID3DBlob* vsByteCode;
+    ID3D11PixelShader* ps;
+    ID3DBlob* psByteCode;
+    ID3D11Buffer* cBuffer;
+};
+
+void FreeDx11Program(Dx11Program* program)
+{
+    program->vs->Release();
+    program->vsByteCode->Release();
+    program->ps->Release();
+    program->psByteCode->Release();
+    program->cBuffer->Release();
+    *program = {};
+}
+
+Dx11Program CreateDx11ProgramFromFiles(const char* vsFilename, const char* psFilename, UINT cBufferByteSize, Dx11* dx)
+{
+    String vsCode = ReadAllTextFromFile(vsFilename);
+    ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
+    ID3D11VertexShader* vs = nullptr;
+    dx->device->CreateVertexShader(
+        vsByteCode->GetBufferPointer(), 
+        vsByteCode->GetBufferSize(), 
+        nullptr, 
+        &vs
+    );
+    
+    String psCode = ReadAllTextFromFile(psFilename);
+    ID3DBlob* psByteCode = CompileShaderCode(ShaderType::Pixel, psCode);
+    ID3D11PixelShader* ps = nullptr;
+    dx->device->CreatePixelShader(
+        psByteCode->GetBufferPointer(), 
+        psByteCode->GetBufferSize(), 
+        nullptr, 
+        &ps
+    );
+
+    FreeString(&psCode);
+    FreeString(&vsCode);
+
+    ID3D11Buffer* cBuffer = CreateDx11ConstantBuffer(cBufferByteSize, dx);
+
+    return {
+        .vs = vs,
+        .vsByteCode = vsByteCode,
+        .ps = ps,
+        .psByteCode = psByteCode,
+        .cBuffer = cBuffer
+    };
+}
+
 void DrawLine(Vec3 position, Vec3 scale, float yRotation, 
     const Mat4& projMat, const Mat4 viewMat, ID3D11Buffer* cBuffer, Dx11* dx)
 {
@@ -1078,14 +1160,13 @@ void DrawLine(Vec3 position, Vec3 scale, float yRotation,
 }
 
 void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
-    ID3D11InputLayout* inputLayout, ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer,
-    const Mat4& projMat, const Mat4& viewMat)
+    ID3D11InputLayout* inputLayout, Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
 {
     dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
     dx->context->IASetInputLayout(inputLayout);
     dx->context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    dx->context->VSSetShader(vs, nullptr, 0);
-    dx->context->PSSetShader(ps, nullptr, 0);
+    dx->context->VSSetShader(program->vs, nullptr, 0);
+    dx->context->PSSetShader(program->ps, nullptr, 0);
 
     int nrOfXLines = 1 + (zSquaresHalf * 2);
     int nrOfZLines = 1 + (xSquaresHalf * 2);
@@ -1096,7 +1177,7 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.z = (float)i;
         position.z -= (float)((nrOfXLines - 1) / 2);
         float xLineLen = (float)(nrOfZLines - 1);
-        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, projMat, viewMat, cBuffer, dx);
+        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, projMat, viewMat, program->cBuffer, dx);
     }
 
     // draw lines parallel to z-axis
@@ -1105,14 +1186,13 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.x = (float)i;
         position.x -= (float)((nrOfZLines - 1) / 2);
         float zLineLen = (float)(nrOfXLines - 1);
-        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, projMat, viewMat, cBuffer, dx);
+        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, projMat, viewMat, program->cBuffer, dx);
     }
 
 }
 
 void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
-    ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer,
-    const Mat4& projMat, const Mat4& viewMat)
+    Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
 {
     Vec3 position = { 1.5f, 2.5f, 0.9f };
     Vec3 scale = { 0.4f, 0.4f, 0.4f };
@@ -1125,34 +1205,38 @@ void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* input
     dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
     dx->context->IASetInputLayout(inputLayout);
     dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(vs, nullptr, 0);
-    dx->context->PSSetShader(ps, nullptr, 0);
+    dx->context->VSSetShader(program->vs, nullptr, 0);
+    dx->context->PSSetShader(program->ps, nullptr, 0);
 
 
-    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
     dx->context->Draw(36, 0);
 }
 
-void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexBuffer, unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
-    ID3D11VertexShader* vs, ID3D11PixelShader* ps, ID3D11Buffer* cBuffer, const Mat4& projMat, const Mat4& viewMat)
+void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexPositionBuffer, Dx11VertexBuffer* vertexNormalBuffer, 
+    unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
+    Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
 {
     Vec3 position = { 0.0f, 0.0f, 0.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
-    BasicColorShaderData shaderData = {
+    PhongShaderData shaderData = {
         .xformMat = projMat * viewMat * modelMat,
-        .color = { 0.0f, 0.9f, 0.1f, 1.0f }
+        .color = { 0.0f, 0.9f, 0.1f, 1.0f },
+        // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
+        .lightPosition = { 1.5f, 2.5f, 0.9f }
     };
-    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetVertexBuffers(0, 1, &vertexPositionBuffer->buffer, &vertexPositionBuffer->stride, &vertexPositionBuffer->byteOffset);
+    dx->context->IASetVertexBuffers(1, 1, &vertexNormalBuffer->buffer, &vertexNormalBuffer->stride, &vertexNormalBuffer->byteOffset);
     dx->context->IASetInputLayout(inputLayout);
     dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(vs, nullptr, 0);
-    dx->context->PSSetShader(ps, nullptr, 0);
+    dx->context->VSSetShader(program->vs, nullptr, 0);
+    dx->context->PSSetShader(program->ps, nullptr, 0);
 
-    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
     dx->context->Draw(vertexCount, 0);
 }
 
@@ -1636,8 +1720,8 @@ static Vec3 lineVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
+// TODO: complete/fix phong shading on model
 // TODO: remove some duplicate code in object rendering
-// TODO: use normals to implement phong shading on model
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
 int main()
@@ -1664,32 +1748,14 @@ int main()
 
     Dx11VertexBuffer cubeVertexBuffer = CreateStaticDx11VertexBuffer(cubeVertices, sizeof(cubeVertices), 3 * sizeof(float), 0, &dx);
 
-    String vsCode = ReadAllTextFromFile("res/basiccolorvs.hlsl");
-    ID3DBlob* vsByteCode = CompileShaderCode(ShaderType::Vertex, vsCode);
-    ID3D11VertexShader* vs = nullptr;
-    dx.device->CreateVertexShader(
-        vsByteCode->GetBufferPointer(), 
-        vsByteCode->GetBufferSize(), 
-        nullptr, 
-        &vs
-    );
-    
-    String psCode = ReadAllTextFromFile("res/basiccolorps.hlsl");
-    ID3DBlob* psByteCode = CompileShaderCode(ShaderType::Pixel, psCode);
-    ID3D11PixelShader* ps = nullptr;
-    dx.device->CreatePixelShader(
-        psByteCode->GetBufferPointer(), 
-        psByteCode->GetBufferSize(), 
-        nullptr, 
-        &ps
-    );
+    Dx11Program basicColorProgram = CreateDx11ProgramFromFiles("res/basiccolorvs.hlsl", "res/basiccolorps.hlsl", sizeof(BasicColorShaderData), &dx);
+    ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, basicColorProgram.vsByteCode);
 
-    ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, vsByteCode);
+    Dx11Program phongProgram = CreateDx11ProgramFromFiles("res/phongvs.hlsl", "res/phongps.hlsl", sizeof(PhongShaderData), &dx);
+    ID3D11InputLayout* phongInputLayout = CreatePhongDx11InputLayout(&dx, phongProgram.vsByteCode);
 
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f);
     ToggleCamControl(&cam, true);
-
-    ID3D11Buffer* basicColorCBuffer = CreateDx11ConstantBuffer(sizeof(BasicColorShaderData), &dx);
 
     SetupRawMouseInput();
 
@@ -1704,8 +1770,15 @@ int main()
     };
 
     ObjModel model = LoadModelFromObjFile("res/monkey.obj");
-    Dx11VertexBuffer modelVertexBuffer = CreateStaticDx11VertexBuffer(
+    Dx11VertexBuffer modelPositionVertexBuffer = CreateStaticDx11VertexBuffer(
         model.positions, 
+        model.vertexCount * sizeof(Vec3), 
+        sizeof(Vec3), 
+        0, 
+        &dx
+    );
+    Dx11VertexBuffer modelNormalVertexBuffer = CreateStaticDx11VertexBuffer(
+        model.normals, 
         model.vertexCount * sizeof(Vec3), 
         sizeof(Vec3), 
         0, 
@@ -1748,14 +1821,14 @@ int main()
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawModel(&dx, &modelVertexBuffer, model.vertexCount, basicColorInputLayout, vs, ps, 
-            basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawModel(&dx, &modelPositionVertexBuffer, &modelNormalVertexBuffer, 
+            model.vertexCount, phongInputLayout, &phongProgram, perspectiveProjMat, viewMat);
 
-        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, vs, ps, 
-            basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, 
+            perspectiveProjMat, viewMat);
 
-        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, vs, ps, 
-            basicColorCBuffer, perspectiveProjMat, viewMat);
+        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, 
+            perspectiveProjMat, viewMat);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
@@ -1763,20 +1836,18 @@ int main()
 
     FreeObjModel(&model);
 
-    basicColorCBuffer->Release();
     basicColorInputLayout->Release();
+    phongInputLayout->Release();
 
-    ps->Release();
-    psByteCode->Release();
-    FreeString(&psCode);
-
-    vs->Release();
-    vsByteCode->Release();
-    FreeString(&vsCode);
+    FreeDx11Program(&basicColorProgram);
+    FreeDx11Program(&phongProgram);
 
     FreeDx11VertexBuffer(&cubeVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
-    FreeDx11VertexBuffer(&modelVertexBuffer);
+    
+    FreeDx11VertexBuffer(&modelPositionVertexBuffer);
+    FreeDx11VertexBuffer(&modelNormalVertexBuffer);
+
     rasterizerState->Release();
     dsState->Release();
     FreeDx11DepthStencilBuffer(&dsBuffer);
