@@ -781,6 +781,19 @@ Mat4 operator * (const Mat4& one, const Mat4& other)
     return res;
 }
 
+Mat4 operator * (const Mat4& mat, float scalar)
+{
+    Mat4 res = {};
+
+    for(int x = 0; x < 4; x++) {
+        for(int y = 0; y < 4; y++) {
+            res.data[y][x] = mat.data[y][x] * scalar;
+        }
+    }
+
+    return res;
+}
+
 Mat4 IdentityMat4()
 {
     Mat4 res = {};
@@ -903,6 +916,161 @@ Mat4 RotateEulerZMat4(float angleRads)
     return res;
 }
 
+struct Mat2
+{
+    float data[2][2];
+};
+
+struct Mat3
+{
+    float data[3][3];
+};
+
+float Determ(const Mat2& mat)
+{
+    return 
+        (mat.data[0][0] * mat.data[1][1]) - 
+        (mat.data[1][0] * mat.data[0][1]);
+}
+
+float Determ(const Mat3& mat)
+{
+    float s1 = mat.data[0][0];
+    Mat2 m1 = {
+        .data = {
+            { mat.data[1][1], mat.data[1][2] },
+            { mat.data[2][1], mat.data[2][2] },
+        }
+    };
+    float s2 = -mat.data[0][1];
+    Mat2 m2 = {
+        .data = {
+            { mat.data[1][0], mat.data[1][2] },
+            { mat.data[2][0], mat.data[2][2] },
+        }
+    };
+    float s3 = mat.data[0][2];
+    Mat2 m3 = {
+        .data = {
+            { mat.data[1][0], mat.data[1][1] },
+            { mat.data[2][0], mat.data[2][1] },
+        }
+    };
+
+    return (s1 * Determ(m1)) + (s2 * Determ(m2)) + (s3 * Determ(m3));
+}
+
+float Determ(const Mat4& mat)
+{
+    float s1 = mat.data[0][0];
+    Mat3 m1 = {
+        .data = {
+            { mat.data[1][1], mat.data[1][2], mat.data[1][3] },
+            { mat.data[2][1], mat.data[2][2], mat.data[2][3] },
+            { mat.data[3][1], mat.data[3][2], mat.data[3][3] }
+        }
+    };
+    float s2 = -mat.data[0][1];
+    Mat3 m2 = {
+        .data = {
+            { mat.data[1][0], mat.data[1][2], mat.data[1][3] },
+            { mat.data[2][0], mat.data[2][2], mat.data[2][3] },
+            { mat.data[3][0], mat.data[3][2], mat.data[3][3] }
+        }
+    };
+    float s3 = mat.data[0][2];
+    Mat3 m3 = {
+        .data = {
+            { mat.data[1][0], mat.data[1][1], mat.data[1][3] },
+            { mat.data[2][0], mat.data[2][1], mat.data[2][3] },
+            { mat.data[3][0], mat.data[3][1], mat.data[3][3] }
+        }
+    };
+    float s4 = -mat.data[0][3];
+    Mat3 m4 = {
+        .data = {
+            { mat.data[1][0], mat.data[1][1], mat.data[1][2] },
+            { mat.data[2][0], mat.data[2][1], mat.data[2][2] },
+            { mat.data[3][0], mat.data[3][1], mat.data[3][2] }
+        }
+    };
+
+    return (s1 * Determ(m1)) + (s2 * Determ(m2)) + (s3 * Determ(m3)) + (s4 * Determ(m4));
+}
+
+Mat3 GetSubMat(const Mat4& mat, int exceptX, int exceptY)
+{
+    Mat3 res = {};
+    
+    int writeX = 0;
+    int writeY = 0;
+
+    for(int y = 0; y < 4; y++) {
+        if(y == exceptY)
+            continue;
+        for(int x = 0; x < 4; x++) {
+            if(x == exceptX)
+                continue;
+            res.data[writeY][writeX] = mat.data[y][x];
+            writeX++;
+        }
+        writeX = 0;
+        writeY++;
+    }
+
+    return res;
+}
+
+Mat4 Transpose(const Mat4& mat)
+{
+    Mat4 res = {};
+
+    for(int y = 0; y < 4; y++) {
+        for(int x = 0; x < 4; x++) {
+            res.data[x][y] = mat.data[y][x];
+        }
+    }
+
+    return res;
+}
+
+Mat4 Adjugate(const Mat4& mat)
+{
+    // + - + -
+    // - + - +
+    // + - + -
+    // - + - +
+    Mat4 cofactorMat = {};
+    for(int y = 0; y < 4; y++) {
+        for(int x = 0; x < 4; x++) {
+            float determ = Determ(GetSubMat(mat, x, y));
+            if(y % 2 == 0) {
+                if(x % 2 != 0)
+                    determ = -determ;
+            }
+            else {
+                if(x % 2 == 0)
+                    determ = -determ;
+            }
+            cofactorMat.data[y][x] = determ;
+        }
+    }
+
+    return Transpose(cofactorMat);
+}
+
+Mat4 Inverse(const Mat4& mat) 
+{
+    float determ = Determ(mat);
+    Mat4 adjugateMat = Adjugate(mat);
+    return adjugateMat * (1.0f / determ);
+}
+
+Mat4 NormalMat4FromModelMat(const Mat4& modelMat)
+{
+    return Transpose(Inverse(modelMat));
+}
+
 struct BasicColorShaderData
 {
     Mat4 xformMat;
@@ -912,7 +1080,9 @@ CHECK_CBUFFER_ALIGNMENT(BasicColorShaderData);
 
 struct alignas(16) PhongShaderData
 {
-    Mat4 xformMat;
+    Mat4 projViewMat;
+    Mat4 modelMat;
+    Mat4 normalMat;
     Vec4 color;
     Vec3 lightPosition;
 };
@@ -1188,7 +1358,6 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         float zLineLen = (float)(nrOfXLines - 1);
         DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, projMat, viewMat, program->cBuffer, dx);
     }
-
 }
 
 void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
@@ -1221,9 +1390,12 @@ void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexPositionBuffer, Dx11VertexBuffe
     Vec3 position = { 0.0f, 0.0f, 0.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+    Mat4 normalMat = NormalMat4FromModelMat(modelMat);
 
     PhongShaderData shaderData = {
-        .xformMat = projMat * viewMat * modelMat,
+        .projViewMat = projMat * viewMat,
+        .modelMat = modelMat,
+        .normalMat = normalMat,
         .color = { 0.0f, 0.9f, 0.1f, 1.0f },
         // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
         .lightPosition = { 1.5f, 2.5f, 0.9f }
@@ -1721,6 +1893,7 @@ static Vec3 lineVertices[] = {
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
 // TODO: complete/fix phong shading on model
+// TODO: look into rotation matrix skewing issue
 // TODO: remove some duplicate code in object rendering
 // TODO: mouse drag controls for model rotation
 // TODO: fps & draw model stats text on screen
