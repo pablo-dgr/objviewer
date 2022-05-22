@@ -885,7 +885,7 @@ Mat4 RotateEulerYMat4(float angleRads)
     Mat4 res = IdentityMat4();
     res.data[0][0] =  cosine;
     res.data[0][2] =  -sine;
-    res.data[0][2] =  sine;
+    res.data[2][0] =  sine;
     res.data[2][2] =  cosine;
     return res;
 }
@@ -1389,7 +1389,7 @@ void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexPositionBuffer, Dx11VertexBuffe
 {
     Vec3 position = { 0.0f, 0.0f, 0.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(30.0f));
     Mat4 normalMat = NormalMat4FromModelMat(modelMat);
 
     PhongShaderData shaderData = {
