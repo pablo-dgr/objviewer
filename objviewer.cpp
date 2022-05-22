@@ -1078,13 +1078,14 @@ struct BasicColorShaderData
 };
 CHECK_CBUFFER_ALIGNMENT(BasicColorShaderData);
 
-struct alignas(16) PhongShaderData
+struct PhongShaderData
 {
     Mat4 projViewMat;
     Mat4 modelMat;
     Mat4 normalMat;
     Vec4 color;
-    Vec3 lightPosition;
+    alignas(16) Vec3 lightPosition;
+    alignas(16) Vec3 camPosition;
 };
 CHECK_CBUFFER_ALIGNMENT(PhongShaderData);
 
@@ -1182,6 +1183,8 @@ void UpdateTimer(Timer* timer)
 
 struct FpsCam
 {
+    Mat4 projMat;
+    Mat4 viewMat;
     Vec3 position;
     Vec3 front;
     Vec3 up;
@@ -1192,16 +1195,23 @@ struct FpsCam
     bool isControlOn;
 };
 
-FpsCam CreateFpsCam(Vec3 position, float moveSpeed, float lookSpeed)
+FpsCam CreateFpsCam(Vec3 position, float moveSpeed, float lookSpeed, const Mat4& projMat)
 {
     return {
+        .projMat = projMat,
+        .viewMat = IdentityMat4(),
         .position = position,
         .front = { 0.0f, 0.0f, -1.0f },
         .up = { 0.0f, 1.0f, 0.0f },
         .moveSpeed = moveSpeed,
         .lookSpeed = lookSpeed,
-        .yaw = -89.0f // // 0 would start with the cam looking to the right
+        .yaw = -89.0f // 0 would start with the cam looking to the right
     };
+}
+
+Mat4 CreateViewMatForFpsCam(FpsCam* cam)
+{
+    return LookatMat4(cam->position, cam->position + cam->front, cam->up);
 }
 
 void UpdateFpsCam(FpsCam* cam, Input* input, float deltaTime)
@@ -1237,11 +1247,8 @@ void UpdateFpsCam(FpsCam* cam, Input* input, float deltaTime)
     dir.y = sin(toRadians(cam->pitch));
     dir.z = sin(toRadians(cam->yaw)) * cosf(toRadians(cam->pitch));
     cam->front = Normalize(dir);
-}
 
-Mat4 CreateViewMatForFpsCam(FpsCam* cam)
-{
-    return LookatMat4(cam->position, cam->position + cam->front, cam->up);
+    cam->viewMat = CreateViewMatForFpsCam(cam);
 }
 
 void ToggleCamControl(FpsCam* cam, bool isOn)
@@ -1318,19 +1325,18 @@ Dx11Program CreateDx11ProgramFromFiles(const char* vsFilename, const char* psFil
     };
 }
 
-void DrawLine(Vec3 position, Vec3 scale, float yRotation, 
-    const Mat4& projMat, const Mat4 viewMat, ID3D11Buffer* cBuffer, Dx11* dx)
+void DrawLine(Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, Dx11* dx, const FpsCam& cam)
 {
     BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(yRotation));
-    shaderData.xformMat = projMat * viewMat * modelMat;
+    shaderData.xformMat = cam.projMat * cam.viewMat * modelMat;
     UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
     dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
     dx->context->Draw(2, 0);
 }
 
 void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
-    ID3D11InputLayout* inputLayout, Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
+    ID3D11InputLayout* inputLayout, Dx11Program* program, const FpsCam& cam)
 {
     dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
     dx->context->IASetInputLayout(inputLayout);
@@ -1347,7 +1353,7 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.z = (float)i;
         position.z -= (float)((nrOfXLines - 1) / 2);
         float xLineLen = (float)(nrOfZLines - 1);
-        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, projMat, viewMat, program->cBuffer, dx);
+        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, dx, cam);
     }
 
     // draw lines parallel to z-axis
@@ -1356,19 +1362,19 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.x = (float)i;
         position.x -= (float)((nrOfZLines - 1) / 2);
         float zLineLen = (float)(nrOfXLines - 1);
-        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, projMat, viewMat, program->cBuffer, dx);
+        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, dx, cam);
     }
 }
 
 void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
-    Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
+    Dx11Program* program, const FpsCam& cam)
 {
-    Vec3 position = { 1.5f, 2.5f, 0.9f };
+    Vec3 position = { 1.5f, 4.5f, -1.5f };
     Vec3 scale = { 0.4f, 0.4f, 0.4f };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
 
     BasicColorShaderData shaderData = { 
-        .xformMat = projMat * viewMat * modelMat,
+        .xformMat = cam.projMat * cam.viewMat * modelMat,
         .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
     };
     dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
@@ -1385,21 +1391,23 @@ void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* input
 
 void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexPositionBuffer, Dx11VertexBuffer* vertexNormalBuffer, 
     unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
-    Dx11Program* program, const Mat4& projMat, const Mat4& viewMat)
+    Dx11Program* program, const FpsCam& cam)
 {
     Vec3 position = { 0.0f, 0.0f, 0.0f };
     Vec3 scale = { 1.0f, 1.0f, 1.0f };
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(30.0f));
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerXMat4(toRadians(-90.0f));
     Mat4 normalMat = NormalMat4FromModelMat(modelMat);
 
     PhongShaderData shaderData = {
-        .projViewMat = projMat * viewMat,
+        .projViewMat = cam.projMat * cam.viewMat,
         .modelMat = modelMat,
         .normalMat = normalMat,
         .color = { 0.0f, 0.9f, 0.1f, 1.0f },
         // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
-        .lightPosition = { 1.5f, 2.5f, 0.9f }
+        .lightPosition = { 1.5f, 4.5f, -1.5f },
+        .camPosition = cam.position
     };
+    printf("cam pos: x = %f, y = %f, z = %f\n", cam.position.x, cam.position.y, cam.position.z);
     dx->context->IASetVertexBuffers(0, 1, &vertexPositionBuffer->buffer, &vertexPositionBuffer->stride, &vertexPositionBuffer->byteOffset);
     dx->context->IASetVertexBuffers(1, 1, &vertexNormalBuffer->buffer, &vertexNormalBuffer->stride, &vertexNormalBuffer->byteOffset);
     dx->context->IASetInputLayout(inputLayout);
@@ -1892,11 +1900,11 @@ static Vec3 lineVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: complete/fix phong shading on model
-// TODO: look into rotation matrix skewing issue
 // TODO: remove some duplicate code in object rendering
-// TODO: mouse drag controls for model rotation
-// TODO: fps & draw model stats text on screen
+// TODO: text rendering
+// TODO: draw fps & model stats text on screen
+// TODO: mouse click + drag controls for model rotation
+// TODO: optimize grid drawing
 int main()
 {
     int windowWidth = 1280;
@@ -1927,7 +1935,7 @@ int main()
     Dx11Program phongProgram = CreateDx11ProgramFromFiles("res/phongvs.hlsl", "res/phongps.hlsl", sizeof(PhongShaderData), &dx);
     ID3D11InputLayout* phongInputLayout = CreatePhongDx11InputLayout(&dx, phongProgram.vsByteCode);
 
-    FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f);
+    FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f, PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f));
     ToggleCamControl(&cam, true);
 
     SetupRawMouseInput();
@@ -1984,9 +1992,6 @@ int main()
             UpdateFpsCam(&cam, &input, (float)timer.deltaTime);
         }
 
-        Mat4 perspectiveProjMat = PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f);
-        Mat4 viewMat = CreateViewMatForFpsCam(&cam);
-
         dx.context->RSSetViewports(1, &viewport);
         dx.context->RSSetState(rasterizerState);
         dx.context->OMSetRenderTargets(1, &backbuffer.view, dsBuffer.view);
@@ -1995,13 +2000,11 @@ int main()
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
         DrawModel(&dx, &modelPositionVertexBuffer, &modelNormalVertexBuffer, 
-            model.vertexCount, phongInputLayout, &phongProgram, perspectiveProjMat, viewMat);
+            model.vertexCount, phongInputLayout, &phongProgram, cam);
 
-        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, 
-            perspectiveProjMat, viewMat);
+        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
-        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, 
-            perspectiveProjMat, viewMat);
+        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);

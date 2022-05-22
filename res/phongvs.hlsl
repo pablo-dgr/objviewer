@@ -11,6 +11,7 @@ cbuffer Data : register(b0)
     matrix normalMat;
     float4 color;
     float3 lightPosition;
+    float3 camPosition;
 };
 
 struct VsOutput
@@ -20,6 +21,7 @@ struct VsOutput
     float4 color: COLOR;
     float3 normal : NORMAL;
     float3 lightPosition : LIGHT;
+    float3 camPosition : CAM;
 };
 
 VsOutput main(VsInput input)
@@ -32,5 +34,6 @@ VsOutput main(VsInput input)
     float4 psNormal = mul(normalMat, float4(input.normal, 1.0f));
     output.normal = psNormal.xyz;
     output.lightPosition = lightPosition;
+    output.camPosition = camPosition;
     return output;
 }
