@@ -409,6 +409,26 @@ Dx11VertexBuffer CreateStaticDx11VertexBuffer(void* data, size_t byteSize, UINT 
     };
 }
 
+// TODO: remove old version when not needed anymore
+ID3D11Buffer* CreateStaticDx11VertexBuffer(const Dx11& dx, void* data, size_t byteSize)
+{
+    D3D11_BUFFER_DESC vertexBufferDesc = {
+        .ByteWidth = (UINT)byteSize,
+        .Usage = D3D11_USAGE_IMMUTABLE,
+        .BindFlags = D3D11_BIND_VERTEX_BUFFER
+    };
+
+    D3D11_SUBRESOURCE_DATA vertexBufData = {
+        .pSysMem = data
+    };
+
+    ID3D11Buffer* vertexBuffer = nullptr;
+    HRESULT res = dx.device->CreateBuffer(&vertexBufferDesc, &vertexBufData, &vertexBuffer);
+    ASSERT(res == S_OK);
+
+    return vertexBuffer;
+}
+
 enum class InputElType
 {
     Position,
@@ -1325,168 +1345,6 @@ Dx11Program CreateDx11ProgramFromFiles(const char* vsFilename, const char* psFil
     };
 }
 
-void DrawLine(Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, Dx11* dx, const FpsCam& cam)
-{
-    BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(yRotation));
-    shaderData.xformMat = cam.projMat * cam.viewMat * modelMat;
-    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
-    dx->context->Draw(2, 0);
-}
-
-void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
-    ID3D11InputLayout* inputLayout, Dx11Program* program, const FpsCam& cam)
-{
-    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    dx->context->VSSetShader(program->vs, nullptr, 0);
-    dx->context->PSSetShader(program->ps, nullptr, 0);
-
-    int nrOfXLines = 1 + (zSquaresHalf * 2);
-    int nrOfZLines = 1 + (xSquaresHalf * 2);
-
-    // draw lines parallel to x-axis
-    for(int i = 0; i < nrOfXLines; i++) {
-        Vec3 position = {};
-        position.z = (float)i;
-        position.z -= (float)((nrOfXLines - 1) / 2);
-        float xLineLen = (float)(nrOfZLines - 1);
-        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, dx, cam);
-    }
-
-    // draw lines parallel to z-axis
-    for(int i = 0; i < nrOfZLines; i++) {
-        Vec3 position = {};
-        position.x = (float)i;
-        position.x -= (float)((nrOfZLines - 1) / 2);
-        float zLineLen = (float)(nrOfXLines - 1);
-        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, dx, cam);
-    }
-}
-
-void DrawCube(Dx11* dx, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
-    Dx11Program* program, const FpsCam& cam)
-{
-    Vec3 position = { 1.5f, 4.5f, -1.5f };
-    Vec3 scale = { 0.4f, 0.4f, 0.4f };
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale);
-
-    BasicColorShaderData shaderData = { 
-        .xformMat = cam.projMat * cam.viewMat * modelMat,
-        .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
-    };
-    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(program->vs, nullptr, 0);
-    dx->context->PSSetShader(program->ps, nullptr, 0);
-
-
-    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
-    dx->context->Draw(36, 0);
-}
-
-void DrawModel(Dx11* dx, Dx11VertexBuffer* vertexPositionBuffer, Dx11VertexBuffer* vertexNormalBuffer, 
-    unsigned int vertexCount, ID3D11InputLayout* inputLayout, 
-    Dx11Program* program, const FpsCam& cam)
-{
-    Vec3 position = { 0.0f, 0.0f, 0.0f };
-    Vec3 scale = { 1.0f, 1.0f, 1.0f };
-    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerXMat4(toRadians(-90.0f));
-    Mat4 normalMat = NormalMat4FromModelMat(modelMat);
-
-    PhongShaderData shaderData = {
-        .projViewMat = cam.projMat * cam.viewMat,
-        .modelMat = modelMat,
-        .normalMat = normalMat,
-        .color = { 0.0f, 0.9f, 0.1f, 1.0f },
-        // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
-        .lightPosition = { 1.5f, 4.5f, -1.5f },
-        .camPosition = cam.position
-    };
-    printf("cam pos: x = %f, y = %f, z = %f\n", cam.position.x, cam.position.y, cam.position.z);
-    dx->context->IASetVertexBuffers(0, 1, &vertexPositionBuffer->buffer, &vertexPositionBuffer->stride, &vertexPositionBuffer->byteOffset);
-    dx->context->IASetVertexBuffers(1, 1, &vertexNormalBuffer->buffer, &vertexNormalBuffer->stride, &vertexNormalBuffer->byteOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(program->vs, nullptr, 0);
-    dx->context->PSSetShader(program->ps, nullptr, 0);
-
-    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
-    dx->context->Draw(vertexCount, 0);
-}
-
-struct Dx11DepthStencilBuffer
-{
-    ID3D11Texture2D* buffer;
-    ID3D11DepthStencilView* view;
-};
-
-Dx11DepthStencilBuffer CreateDx11DepthStencilBuffer(UINT width, UINT height, Dx11* dx)
-{
-    D3D11_TEXTURE2D_DESC dsBufferDesc = {
-        .Width = width,
-        .Height = height,
-        .MipLevels = 1,
-        .ArraySize = 1,
-        .Format = DXGI_FORMAT_D24_UNORM_S8_UINT,
-        .SampleDesc = {
-            .Count = 1,
-            .Quality = 0
-        },
-        .Usage = D3D11_USAGE_DEFAULT,
-        .BindFlags = D3D11_BIND_DEPTH_STENCIL
-    };
-
-    ID3D11Texture2D* dsBuffer = nullptr;
-    HRESULT res = dx->device->CreateTexture2D(&dsBufferDesc, nullptr, &dsBuffer);
-    ASSERT(res == S_OK);
-
-    ID3D11DepthStencilView* dsBufferView = nullptr;
-    res = dx->device->CreateDepthStencilView(dsBuffer, nullptr, &dsBufferView);
-    ASSERT(res == S_OK);
-
-    return {
-        .buffer = dsBuffer,
-        .view = dsBufferView
-    };
-}
-
-void FreeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer)
-{
-    dsBuffer->buffer->Release();
-    dsBuffer->view->Release();
-    *dsBuffer = {};
-}
-
-void ResizeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer, UINT newWidth, UINT newHeight, Dx11* dx)
-{
-    dx->context->OMSetRenderTargets(0, 0, 0);
-    FreeDx11DepthStencilBuffer(dsBuffer);
-    *dsBuffer = CreateDx11DepthStencilBuffer(newWidth, newHeight, dx);
-}
-
-ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
-{
-    D3D11_DEPTH_STENCIL_DESC stateDesc = {
-        .DepthEnable = TRUE,
-        .DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL,
-        .DepthFunc = D3D11_COMPARISON_LESS,
-        .StencilEnable = FALSE,
-        .StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK,
-        .StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK
-    };
-
-    ID3D11DepthStencilState* dsState = nullptr;
-    HRESULT res = dx->device->CreateDepthStencilState(&stateDesc, &dsState);
-    ASSERT(res == S_OK);
-    return dsState;
-}
-
 struct StringView
 {
     const char* start;
@@ -1519,6 +1377,14 @@ StringView ReadLine(StringReader* reader)
         .len = len
     };
 }
+
+struct ObjModel
+{
+    Vec3* positions;
+    Vec2* texCoords;
+    Vec3* normals;
+    unsigned int vertexCount;
+};
 
 enum class ObjLineType
 {
@@ -1754,14 +1620,6 @@ size_t GetArrayIndexFromObjIndex(int objIndex, size_t arrayLen)
     }
 }
 
-struct ObjModel
-{
-    Vec3* positions;
-    Vec2* texCoords;
-    Vec3* normals;
-    unsigned int vertexCount;
-};
-
 void FreeObjModel(ObjModel* model)
 {
     if(model->positions != nullptr)
@@ -1834,6 +1692,214 @@ ObjModel LoadModelFromObjFile(const char* filename)
     return model;
 }
 
+struct Transform
+{
+    Vec3 position;
+    Vec3 scale;
+    Vec3 rotation;
+};
+
+Mat4 GetModelMatFromTransform(const Transform& transform)
+{
+    // TODO: support rotation on all axis
+    return TranslateMat4(transform.position) * 
+        ScaleMat4(transform.scale) * 
+        RotateEulerXMat4(transform.rotation.x);
+}
+
+struct Dx11ModelData
+{
+    ID3D11Buffer** vertexBuffers;
+    UINT vertexBufferCount;
+    UINT* vertexBufferStrides;
+    UINT vertexCount;
+};
+
+Dx11ModelData CreateDx11ModelDataFromObjModel(const Dx11& dx, const ObjModel& objModel)
+{
+    Dx11ModelData modelData = {
+        .vertexBufferCount = 2,
+        .vertexCount = objModel.vertexCount
+    };
+
+    modelData.vertexBuffers = (ID3D11Buffer**)calloc(1, modelData.vertexBufferCount * sizeof(ID3D11Buffer*));
+    modelData.vertexBufferStrides = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
+
+    modelData.vertexBuffers[0] = CreateStaticDx11VertexBuffer(dx, objModel.positions, sizeof(Vec3) * objModel.vertexCount);
+    modelData.vertexBuffers[1] = CreateStaticDx11VertexBuffer(dx, objModel.normals, sizeof(Vec3) * objModel.vertexCount);
+
+    modelData.vertexBufferStrides[0] = sizeof(Vec3);
+    modelData.vertexBufferStrides[1] = sizeof(Vec3);
+
+    return modelData;
+}
+
+void FreeDx11ModelData(Dx11ModelData* modelData)
+{
+    for(int i = 0; i < modelData->vertexBufferCount; i++)
+        modelData->vertexBuffers[i]->Release();
+
+    free(modelData->vertexBuffers);
+    free(modelData->vertexBufferStrides);
+
+    *modelData = {};
+}
+
+void DrawLine(Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, Dx11* dx, const FpsCam& cam)
+{
+    BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
+    Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(yRotation));
+    shaderData.xformMat = cam.projMat * cam.viewMat * modelMat;
+    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
+    dx->context->Draw(2, 0);
+}
+
+void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
+    ID3D11InputLayout* inputLayout, Dx11Program* program, const FpsCam& cam)
+{
+    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    dx->context->VSSetShader(program->vs, nullptr, 0);
+    dx->context->PSSetShader(program->ps, nullptr, 0);
+
+    int nrOfXLines = 1 + (zSquaresHalf * 2);
+    int nrOfZLines = 1 + (xSquaresHalf * 2);
+
+    // draw lines parallel to x-axis
+    for(int i = 0; i < nrOfXLines; i++) {
+        Vec3 position = {};
+        position.z = (float)i;
+        position.z -= (float)((nrOfXLines - 1) / 2);
+        float xLineLen = (float)(nrOfZLines - 1);
+        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, dx, cam);
+    }
+
+    // draw lines parallel to z-axis
+    for(int i = 0; i < nrOfZLines; i++) {
+        Vec3 position = {};
+        position.x = (float)i;
+        position.x -= (float)((nrOfZLines - 1) / 2);
+        float zLineLen = (float)(nrOfXLines - 1);
+        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, dx, cam);
+    }
+}
+
+void DrawCube(Dx11* dx, const Transform& transform, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
+    Dx11Program* program, const FpsCam& cam)
+{
+    Mat4 modelMat = GetModelMatFromTransform(transform);
+
+    BasicColorShaderData shaderData = { 
+        .xformMat = cam.projMat * cam.viewMat * modelMat,
+        .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
+    };
+    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx->context->VSSetShader(program->vs, nullptr, 0);
+    dx->context->PSSetShader(program->ps, nullptr, 0);
+
+    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
+    dx->context->Draw(36, 0);
+}
+
+void DrawMonkeyModel(Dx11* dx, const Transform& transform, Dx11ModelData& model, ID3D11InputLayout* inputLayout, 
+    const Dx11Program& program, const FpsCam& cam)
+{
+    Mat4 modelMat = GetModelMatFromTransform(transform);
+    Mat4 normalMat = NormalMat4FromModelMat(modelMat);
+
+    PhongShaderData shaderData = {
+        .projViewMat = cam.projMat * cam.viewMat,
+        .modelMat = modelMat,
+        .normalMat = normalMat,
+        .color = { 0.0f, 0.9f, 0.1f, 1.0f },
+        // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
+        .lightPosition = { 1.5f, 4.5f, -1.5f },
+        .camPosition = cam.position
+    };
+    UINT dummyOffset = 0;
+    dx->context->IASetVertexBuffers(0, model.vertexBufferCount, model.vertexBuffers, model.vertexBufferStrides, &dummyOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx->context->VSSetShader(program.vs, nullptr, 0);
+    dx->context->PSSetShader(program.ps, nullptr, 0);
+
+    UploadDataToConstantBuffer(program.cBuffer, &shaderData, sizeof(shaderData), dx);
+    dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx->context->Draw(model.vertexCount, 0);
+}
+
+struct Dx11DepthStencilBuffer
+{
+    ID3D11Texture2D* buffer;
+    ID3D11DepthStencilView* view;
+};
+
+Dx11DepthStencilBuffer CreateDx11DepthStencilBuffer(UINT width, UINT height, Dx11* dx)
+{
+    D3D11_TEXTURE2D_DESC dsBufferDesc = {
+        .Width = width,
+        .Height = height,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_D24_UNORM_S8_UINT,
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0
+        },
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_DEPTH_STENCIL
+    };
+
+    ID3D11Texture2D* dsBuffer = nullptr;
+    HRESULT res = dx->device->CreateTexture2D(&dsBufferDesc, nullptr, &dsBuffer);
+    ASSERT(res == S_OK);
+
+    ID3D11DepthStencilView* dsBufferView = nullptr;
+    res = dx->device->CreateDepthStencilView(dsBuffer, nullptr, &dsBufferView);
+    ASSERT(res == S_OK);
+
+    return {
+        .buffer = dsBuffer,
+        .view = dsBufferView
+    };
+}
+
+void FreeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer)
+{
+    dsBuffer->buffer->Release();
+    dsBuffer->view->Release();
+    *dsBuffer = {};
+}
+
+void ResizeDx11DepthStencilBuffer(Dx11DepthStencilBuffer* dsBuffer, UINT newWidth, UINT newHeight, Dx11* dx)
+{
+    dx->context->OMSetRenderTargets(0, 0, 0);
+    FreeDx11DepthStencilBuffer(dsBuffer);
+    *dsBuffer = CreateDx11DepthStencilBuffer(newWidth, newHeight, dx);
+}
+
+ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
+{
+    D3D11_DEPTH_STENCIL_DESC stateDesc = {
+        .DepthEnable = TRUE,
+        .DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL,
+        .DepthFunc = D3D11_COMPARISON_LESS,
+        .StencilEnable = FALSE,
+        .StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK,
+        .StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK
+    };
+
+    ID3D11DepthStencilState* dsState = nullptr;
+    HRESULT res = dx->device->CreateDepthStencilState(&stateDesc, &dsState);
+    ASSERT(res == S_OK);
+    return dsState;
+}
+
 static Vec3 cubeVertices[] = {
     // back face
     {  0.5f,  0.5f, -0.5f },
@@ -1901,6 +1967,8 @@ static Vec3 lineVertices[] = {
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
 // TODO: remove some duplicate code in object rendering
+//          -> make Dx11ModelData from cube vertices
+//          -> draw cube, monkey with same method
 // TODO: text rendering
 // TODO: draw fps & model stats text on screen
 // TODO: mouse click + drag controls for model rotation
@@ -1927,7 +1995,33 @@ int main()
 
     Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
 
+    Transform cubeTransform = {
+        .position = { 1.5f, 4.5f, -1.5f },
+        .scale = { 0.4f, 0.4f, 0.4f }
+    };
     Dx11VertexBuffer cubeVertexBuffer = CreateStaticDx11VertexBuffer(cubeVertices, sizeof(cubeVertices), 3 * sizeof(float), 0, &dx);
+
+    ObjModel monkeyObjModel = LoadModelFromObjFile("res/monkey.obj");
+    Transform modelTransform = {
+        .position = { 0.0f, 0.0f, 0.0f },
+        .scale = { 1.0f, 1.0f, 1.0f },
+        .rotation = { toRadians(-90.0f), 0.0f, 0.0f }
+    };
+    Dx11ModelData monkeyDx11Model = CreateDx11ModelDataFromObjModel(dx, monkeyObjModel);
+    // Dx11VertexBuffer modelPositionVertexBuffer = CreateStaticDx11VertexBuffer(
+    //     model.positions, 
+    //     model.vertexCount * sizeof(Vec3), 
+    //     sizeof(Vec3), 
+    //     0, 
+    //     &dx
+    // );
+    // Dx11VertexBuffer modelNormalVertexBuffer = CreateStaticDx11VertexBuffer(
+    //     model.normals, 
+    //     model.vertexCount * sizeof(Vec3), 
+    //     sizeof(Vec3), 
+    //     0, 
+    //     &dx
+    // );
 
     Dx11Program basicColorProgram = CreateDx11ProgramFromFiles("res/basiccolorvs.hlsl", "res/basiccolorps.hlsl", sizeof(BasicColorShaderData), &dx);
     ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, basicColorProgram.vsByteCode);
@@ -1949,22 +2043,6 @@ int main()
         .moveUp       = { .key = Vkey::Space },
         .devToggle    = { .key = Vkey::F1 }
     };
-
-    ObjModel model = LoadModelFromObjFile("res/monkey.obj");
-    Dx11VertexBuffer modelPositionVertexBuffer = CreateStaticDx11VertexBuffer(
-        model.positions, 
-        model.vertexCount * sizeof(Vec3), 
-        sizeof(Vec3), 
-        0, 
-        &dx
-    );
-    Dx11VertexBuffer modelNormalVertexBuffer = CreateStaticDx11VertexBuffer(
-        model.normals, 
-        model.vertexCount * sizeof(Vec3), 
-        sizeof(Vec3), 
-        0, 
-        &dx
-    );
 
     Timer timer = CreateTimer();
 
@@ -1999,18 +2077,19 @@ int main()
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawModel(&dx, &modelPositionVertexBuffer, &modelNormalVertexBuffer, 
-            model.vertexCount, phongInputLayout, &phongProgram, cam);
+        DrawMonkeyModel(&dx, modelTransform, monkeyDx11Model, phongInputLayout, phongProgram, cam);
 
         DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
-        DrawCube(&dx, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
+        DrawCube(&dx, cubeTransform, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
+        printf("delta time: %f\n", timer.deltaTime);
     }
 
-    FreeObjModel(&model);
+    FreeDx11ModelData(&monkeyDx11Model);
+    FreeObjModel(&monkeyObjModel);
 
     basicColorInputLayout->Release();
     phongInputLayout->Release();
@@ -2021,8 +2100,8 @@ int main()
     FreeDx11VertexBuffer(&cubeVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
     
-    FreeDx11VertexBuffer(&modelPositionVertexBuffer);
-    FreeDx11VertexBuffer(&modelNormalVertexBuffer);
+    // FreeDx11VertexBuffer(&modelPositionVertexBuffer);
+    // FreeDx11VertexBuffer(&modelNormalVertexBuffer);
 
     rasterizerState->Release();
     dsState->Release();
