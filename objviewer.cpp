@@ -1511,7 +1511,7 @@ void FreeObjData(ObjData* objData)
 ObjData AllocateObjData(ObjStats stats)
 {
     ObjData data = {
-        .positions = (Vec3*)calloc(1, stats.positionCount * sizeof(Vec3)),
+        .positions = (Vec3*) (1, stats.positionCount * sizeof(Vec3)),
         .vertices = (ObjVertex*)calloc(1, stats.vertexCount * sizeof(ObjVertex))
     };
 
@@ -1670,12 +1670,17 @@ ObjModel LoadModelFromObjFile(const char* filename)
 
     ObjModel model = { .vertexCount = stats.vertexCount };
     model.positions = (Vec3*)calloc(1, stats.vertexCount * sizeof(Vec3));
+    ASSERT(model.positions != nullptr);
 
-    if(hasTexCoords)
+    if(hasTexCoords) {
         model.texCoords = (Vec2*)calloc(1, stats.vertexCount * sizeof(Vec2));
+        ASSERT(model.texCoords != nullptr);
+    }
 
-    if(hasNormals)
+    if(hasNormals) {
         model.normals = (Vec3*)calloc(1, stats.vertexCount * sizeof(Vec3));
+        ASSERT(model.normals != nullptr);
+    }
 
     for(int i = 0; i < stats.vertexCount; i++) {
         ObjVertex vertex = data.vertices[i];
@@ -1723,7 +1728,9 @@ Dx11ModelData CreateDx11ModelDataFromObjModel(const Dx11& dx, const ObjModel& ob
     };
 
     modelData.vertexBuffers = (ID3D11Buffer**)calloc(1, modelData.vertexBufferCount * sizeof(ID3D11Buffer*));
+    ASSERT(modelData.vertexBuffers != nullptr);
     modelData.vertexBufferStrides = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
+    ASSERT(modelData.vertexBufferStrides != nullptr);
 
     modelData.vertexBuffers[0] = CreateStaticDx11VertexBuffer(dx, objModel.positions, sizeof(Vec3) * objModel.vertexCount);
     modelData.vertexBuffers[1] = CreateStaticDx11VertexBuffer(dx, objModel.normals, sizeof(Vec3) * objModel.vertexCount);
