@@ -1511,7 +1511,7 @@ void FreeObjData(ObjData* objData)
 ObjData AllocateObjData(ObjStats stats)
 {
     ObjData data = {
-        .positions = (Vec3*) (1, stats.positionCount * sizeof(Vec3)),
+        .positions = (Vec3*)calloc(1, stats.positionCount * sizeof(Vec3)),
         .vertices = (ObjVertex*)calloc(1, stats.vertexCount * sizeof(ObjVertex))
     };
 
@@ -1717,6 +1717,7 @@ struct Dx11ModelData
     ID3D11Buffer** vertexBuffers;
     UINT vertexBufferCount;
     UINT* vertexBufferStrides;
+    UINT* vertexBufferOffsets;
     UINT vertexCount;
 };
 
@@ -1731,12 +1732,40 @@ Dx11ModelData CreateDx11ModelDataFromObjModel(const Dx11& dx, const ObjModel& ob
     ASSERT(modelData.vertexBuffers != nullptr);
     modelData.vertexBufferStrides = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
     ASSERT(modelData.vertexBufferStrides != nullptr);
+    modelData.vertexBufferOffsets = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
+    ASSERT(modelData.vertexBufferOffsets != nullptr);
 
     modelData.vertexBuffers[0] = CreateStaticDx11VertexBuffer(dx, objModel.positions, sizeof(Vec3) * objModel.vertexCount);
     modelData.vertexBuffers[1] = CreateStaticDx11VertexBuffer(dx, objModel.normals, sizeof(Vec3) * objModel.vertexCount);
 
     modelData.vertexBufferStrides[0] = sizeof(Vec3);
     modelData.vertexBufferStrides[1] = sizeof(Vec3);
+
+    modelData.vertexBufferOffsets[0] = 0;
+    modelData.vertexBufferOffsets[1] = 0;
+
+    return modelData;
+}
+
+Dx11ModelData CreateDx11ModelDataForCube(const Dx11& dx, Vec3* vertexPositions, UINT vertexCount)
+{
+    Dx11ModelData modelData = {
+        .vertexBufferCount = 1,
+        .vertexCount = vertexCount
+    };
+
+    modelData.vertexBuffers = (ID3D11Buffer**)calloc(1, modelData.vertexBufferCount * sizeof(ID3D11Buffer*));
+    ASSERT(modelData.vertexBuffers != nullptr);
+    modelData.vertexBufferStrides = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
+    ASSERT(modelData.vertexBufferStrides != nullptr);
+    modelData.vertexBufferOffsets = (UINT*)calloc(1, modelData.vertexBufferCount * sizeof(UINT*));
+    ASSERT(modelData.vertexBufferOffsets != nullptr);
+
+    modelData.vertexBuffers[0] = CreateStaticDx11VertexBuffer(dx, vertexPositions, sizeof(Vec3) * vertexCount);
+
+    modelData.vertexBufferStrides[0] = sizeof(Vec3);
+
+    modelData.vertexBufferOffsets[0] = 0;
 
     return modelData;
 }
@@ -1748,6 +1777,7 @@ void FreeDx11ModelData(Dx11ModelData* modelData)
 
     free(modelData->vertexBuffers);
     free(modelData->vertexBufferStrides);
+    free(modelData->vertexBufferOffsets);
 
     *modelData = {};
 }
@@ -1793,49 +1823,16 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
     }
 }
 
-void DrawCube(Dx11* dx, const Transform& transform, Dx11VertexBuffer* vertexBuffer, ID3D11InputLayout* inputLayout, 
-    Dx11Program* program, const FpsCam& cam)
+void DrawDx11Model(Dx11* dx, Dx11ModelData& model, ID3D11InputLayout* inputLayout, const Dx11Program& program, 
+    void* programData, UINT programDataByteSize)
 {
-    Mat4 modelMat = GetModelMatFromTransform(transform);
-
-    BasicColorShaderData shaderData = { 
-        .xformMat = cam.projMat * cam.viewMat * modelMat,
-        .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
-    };
-    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(program->vs, nullptr, 0);
-    dx->context->PSSetShader(program->ps, nullptr, 0);
-
-    UploadDataToConstantBuffer(program->cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &program->cBuffer);
-    dx->context->Draw(36, 0);
-}
-
-void DrawMonkeyModel(Dx11* dx, const Transform& transform, Dx11ModelData& model, ID3D11InputLayout* inputLayout, 
-    const Dx11Program& program, const FpsCam& cam)
-{
-    Mat4 modelMat = GetModelMatFromTransform(transform);
-    Mat4 normalMat = NormalMat4FromModelMat(modelMat);
-
-    PhongShaderData shaderData = {
-        .projViewMat = cam.projMat * cam.viewMat,
-        .modelMat = modelMat,
-        .normalMat = normalMat,
-        .color = { 0.0f, 0.9f, 0.1f, 1.0f },
-        // Hardcoded to be the same pos as in the DrawCube method for now.. TODO: fix
-        .lightPosition = { 1.5f, 4.5f, -1.5f },
-        .camPosition = cam.position
-    };
-    UINT dummyOffset = 0;
-    dx->context->IASetVertexBuffers(0, model.vertexBufferCount, model.vertexBuffers, model.vertexBufferStrides, &dummyOffset);
+    dx->context->IASetVertexBuffers(0, model.vertexBufferCount, model.vertexBuffers, model.vertexBufferStrides, model.vertexBufferOffsets);
     dx->context->IASetInputLayout(inputLayout);
     dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     dx->context->VSSetShader(program.vs, nullptr, 0);
     dx->context->PSSetShader(program.ps, nullptr, 0);
 
-    UploadDataToConstantBuffer(program.cBuffer, &shaderData, sizeof(shaderData), dx);
+    UploadDataToConstantBuffer(program.cBuffer, programData, programDataByteSize, dx);
     dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
     dx->context->Draw(model.vertexCount, 0);
 }
@@ -1973,9 +1970,6 @@ static Vec3 lineVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: remove some duplicate code in object rendering
-//          -> make Dx11ModelData from cube vertices
-//          -> draw cube, monkey with same method
 // TODO: text rendering
 // TODO: draw fps & model stats text on screen
 // TODO: mouse click + drag controls for model rotation
@@ -2000,41 +1994,27 @@ int main()
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
 
-    Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
-
-    Transform cubeTransform = {
-        .position = { 1.5f, 4.5f, -1.5f },
-        .scale = { 0.4f, 0.4f, 0.4f }
-    };
-    Dx11VertexBuffer cubeVertexBuffer = CreateStaticDx11VertexBuffer(cubeVertices, sizeof(cubeVertices), 3 * sizeof(float), 0, &dx);
-
-    ObjModel monkeyObjModel = LoadModelFromObjFile("res/monkey.obj");
-    Transform modelTransform = {
-        .position = { 0.0f, 0.0f, 0.0f },
-        .scale = { 1.0f, 1.0f, 1.0f },
-        .rotation = { toRadians(-90.0f), 0.0f, 0.0f }
-    };
-    Dx11ModelData monkeyDx11Model = CreateDx11ModelDataFromObjModel(dx, monkeyObjModel);
-    // Dx11VertexBuffer modelPositionVertexBuffer = CreateStaticDx11VertexBuffer(
-    //     model.positions, 
-    //     model.vertexCount * sizeof(Vec3), 
-    //     sizeof(Vec3), 
-    //     0, 
-    //     &dx
-    // );
-    // Dx11VertexBuffer modelNormalVertexBuffer = CreateStaticDx11VertexBuffer(
-    //     model.normals, 
-    //     model.vertexCount * sizeof(Vec3), 
-    //     sizeof(Vec3), 
-    //     0, 
-    //     &dx
-    // );
-
     Dx11Program basicColorProgram = CreateDx11ProgramFromFiles("res/basiccolorvs.hlsl", "res/basiccolorps.hlsl", sizeof(BasicColorShaderData), &dx);
     ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, basicColorProgram.vsByteCode);
 
     Dx11Program phongProgram = CreateDx11ProgramFromFiles("res/phongvs.hlsl", "res/phongps.hlsl", sizeof(PhongShaderData), &dx);
     ID3D11InputLayout* phongInputLayout = CreatePhongDx11InputLayout(&dx, phongProgram.vsByteCode);
+
+    Transform cubeTransform = {
+        .position = { 1.5f, 4.5f, -1.5f },
+        .scale = { 0.4f, 0.4f, 0.4f }
+    };
+    Dx11ModelData cubeDx11Model = CreateDx11ModelDataForCube(dx, cubeVertices, ARRAY_LEN(cubeVertices));
+
+    ObjModel monkeyObjModel = LoadModelFromObjFile("res/monkey.obj");
+    Transform monkeyTransform = {
+        .position = { 0.0f, 0.0f, 0.0f },
+        .scale = { 1.0f, 1.0f, 1.0f },
+        .rotation = { toRadians(-90.0f), 0.0f, 0.0f }
+    };
+    Dx11ModelData monkeyDx11Model = CreateDx11ModelDataFromObjModel(dx, monkeyObjModel);
+
+    Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
 
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f, PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f));
     ToggleCamControl(&cam, true);
@@ -2084,11 +2064,26 @@ int main()
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
-        DrawMonkeyModel(&dx, modelTransform, monkeyDx11Model, phongInputLayout, phongProgram, cam);
+        Mat4 monkeyModelMat = GetModelMatFromTransform(monkeyTransform);
+        Mat4 monkeyNormalMat = NormalMat4FromModelMat(monkeyModelMat);
+        PhongShaderData phongShaderData = {
+            .projViewMat = cam.projMat * cam.viewMat,
+            .modelMat = monkeyModelMat,
+            .normalMat = monkeyNormalMat,
+            .color = { 0.0f, 0.9f, 0.1f, 1.0f },
+            .lightPosition = cubeTransform.position,
+            .camPosition = cam.position
+        };
+        DrawDx11Model(&dx, monkeyDx11Model, phongInputLayout, phongProgram, &phongShaderData, sizeof(phongShaderData));
+
+        Mat4 cubeModelMat = GetModelMatFromTransform(cubeTransform);
+        BasicColorShaderData basicColorShaderData = {
+            .xformMat = cam.projMat * cam.viewMat * cubeModelMat,
+            .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
+        };
+        DrawDx11Model(&dx, cubeDx11Model, basicColorInputLayout, basicColorProgram, &basicColorShaderData, sizeof(basicColorShaderData));
 
         DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
-
-        DrawCube(&dx, cubeTransform, &cubeVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
@@ -2097,6 +2092,8 @@ int main()
 
     FreeDx11ModelData(&monkeyDx11Model);
     FreeObjModel(&monkeyObjModel);
+    
+    FreeDx11ModelData(&cubeDx11Model);
 
     basicColorInputLayout->Release();
     phongInputLayout->Release();
@@ -2104,12 +2101,8 @@ int main()
     FreeDx11Program(&basicColorProgram);
     FreeDx11Program(&phongProgram);
 
-    FreeDx11VertexBuffer(&cubeVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
     
-    // FreeDx11VertexBuffer(&modelPositionVertexBuffer);
-    // FreeDx11VertexBuffer(&modelNormalVertexBuffer);
-
     rasterizerState->Release();
     dsState->Release();
     FreeDx11DepthStencilBuffer(&dsBuffer);
