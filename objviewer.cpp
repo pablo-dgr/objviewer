@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
 
 #if DEBUG
 #define ASSERT(x) if(x) {} else { __debugbreak(); }
@@ -18,6 +20,26 @@
 
 #define CHECK_CBUFFER_ALIGNMENT(x) static_assert(sizeof(x) % 16 == 0, "constant buffer data must be 16-byte aligned")
 
+struct Vec2
+{
+    float x;
+    float y;
+};
+
+struct Vec3
+{
+    float x;
+    float y;
+    float z;
+};
+
+struct Vec4
+{
+    float x;
+    float y;
+    float z;
+    float w;
+};
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -433,46 +455,64 @@ enum class InputElType
 {
     Position,
     TexCoord,
-    Normal
+    Normal,
+    Matrix
 };
 
-D3D11_INPUT_ELEMENT_DESC CreateDx11InputElDesc(InputElType type, UINT slot, UINT byteOffset)
+D3D11_INPUT_ELEMENT_DESC CreateDx11InputElDesc(InputElType type, UINT typeIndex, UINT slot, UINT byteOffset, 
+    bool instanced, UINT instanceStepRate)
 {
+    auto inputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+    if(instanced)
+        inputSlotClass = D3D11_INPUT_PER_INSTANCE_DATA;
+
     switch(type) {
         case InputElType::Position:
         {
             return {
                 .SemanticName = "POSITION",
-                .SemanticIndex = 0,
+                .SemanticIndex = typeIndex,
                 .Format = DXGI_FORMAT_R32G32B32_FLOAT,
                 .InputSlot = slot,
                 .AlignedByteOffset = byteOffset,
-                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
-                .InstanceDataStepRate = 0
+                .InputSlotClass = inputSlotClass,
+                .InstanceDataStepRate = instanceStepRate
             };
         }
         case InputElType::TexCoord:
         {
             return {
                 .SemanticName = "TEXCOORD",
-                .SemanticIndex = 0,
+                .SemanticIndex = typeIndex,
                 .Format = DXGI_FORMAT_R32G32_FLOAT,
                 .InputSlot = slot,
                 .AlignedByteOffset = byteOffset,
-                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
-                .InstanceDataStepRate = 0
+                .InputSlotClass = inputSlotClass,
+                .InstanceDataStepRate = instanceStepRate
             };
         }
         case InputElType::Normal:
         {
             return {
                 .SemanticName = "NORMAL",
-                .SemanticIndex = 0,
+                .SemanticIndex = typeIndex,
                 .Format = DXGI_FORMAT_R32G32B32_FLOAT,
                 .InputSlot = slot,
                 .AlignedByteOffset = byteOffset,
-                .InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA,
-                .InstanceDataStepRate = 0
+                .InputSlotClass = inputSlotClass,
+                .InstanceDataStepRate = instanceStepRate
+            };
+        }
+        case InputElType::Matrix:
+        {
+            return {
+                .SemanticName = "MATRIX",
+                .SemanticIndex = typeIndex,
+                .Format = DXGI_FORMAT_R32G32B32A32_FLOAT,
+                .InputSlot = slot,
+                .AlignedByteOffset = byteOffset,
+                .InputSlotClass = inputSlotClass,
+                .InstanceDataStepRate = instanceStepRate
             };
         }
         default:
@@ -484,7 +524,7 @@ D3D11_INPUT_ELEMENT_DESC CreateDx11InputElDesc(InputElType type, UINT slot, UINT
 ID3D11InputLayout* CreateBasicColorDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
 {
     D3D11_INPUT_ELEMENT_DESC inputElements[] = {
-        CreateDx11InputElDesc(InputElType::Position, 0, 0)
+        CreateDx11InputElDesc(InputElType::Position, 0, 0, 0, false, 0)
     };
 
     ID3D11InputLayout* inputLayout = nullptr;
@@ -502,8 +542,40 @@ ID3D11InputLayout* CreateBasicColorDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCod
 ID3D11InputLayout* CreatePhongDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
 {
     D3D11_INPUT_ELEMENT_DESC inputElements[] = {
-        CreateDx11InputElDesc(InputElType::Position, 0, 0),
-        CreateDx11InputElDesc(InputElType::Normal, 1, 0)
+        CreateDx11InputElDesc(InputElType::Position, 0, 0, 0, false, 0),
+        CreateDx11InputElDesc(InputElType::Normal, 0, 1, 0, false, 0)
+    };
+
+    ID3D11InputLayout* inputLayout = nullptr;
+    HRESULT res = dx->device->CreateInputLayout(
+        inputElements,
+        ARRAY_LEN(inputElements),
+        vsByteCode->GetBufferPointer(),
+        vsByteCode->GetBufferSize(),
+        &inputLayout
+    );
+    ASSERT(res == S_OK);
+    return inputLayout;
+}
+
+ID3D11InputLayout* CreateTextDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
+{
+    UINT instanceStepRate = 1;
+
+    D3D11_INPUT_ELEMENT_DESC inputElements[] = {
+        CreateDx11InputElDesc(InputElType::Position, 0, 0, 0, false, 0),
+        
+        CreateDx11InputElDesc(InputElType::Matrix, 0, 1, 0, true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 1, 1, 1 * sizeof(Vec4), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 2, 1, 2 * sizeof(Vec4), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 3, 1, 3 * sizeof(Vec4), true, instanceStepRate),
+
+        CreateDx11InputElDesc(InputElType::TexCoord, 0, 1, 0, true, 1),
+        CreateDx11InputElDesc(InputElType::TexCoord, 1, 1, (4 * sizeof(Vec4)) + (1 * sizeof(Vec2)), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::TexCoord, 2, 1, (4 * sizeof(Vec4)) + (2 * sizeof(Vec2)), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::TexCoord, 3, 1, (4 * sizeof(Vec4)) + (3 * sizeof(Vec2)), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::TexCoord, 4, 1, (4 * sizeof(Vec4)) + (4 * sizeof(Vec2)), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::TexCoord, 5, 1, (4 * sizeof(Vec4)) + (5 * sizeof(Vec2)), true, instanceStepRate),
     };
 
     ID3D11InputLayout* inputLayout = nullptr;
@@ -530,7 +602,13 @@ void FreeString(String* str)
     *str = {};
 }
 
-String ReadAllTextFromFile(const char* filename)
+struct ByteBuffer
+{
+    unsigned char* data;
+    size_t len;
+};
+
+ByteBuffer ReadAllBytesFromFile(const char* filename, size_t extraBytesToAllocate)
 {
     HANDLE file = CreateFileA(
         filename,
@@ -556,7 +634,7 @@ String ReadAllTextFromFile(const char* filename)
     }
 
     size_t fileSize = tmpFileSize.QuadPart;
-    void* buffer = calloc(1, fileSize + 1);
+    void* buffer = calloc(1, fileSize + extraBytesToAllocate);
     ASSERT(buffer != nullptr);
 
     ASSERT(fileSize < 0xFFFFFFFF); // big ass files not supported (yet)
@@ -579,8 +657,17 @@ String ReadAllTextFromFile(const char* filename)
 
     CloseHandle(file);
     return {
-        .data = (char*)buffer,
-        .len = fileSize
+        .data = (unsigned char*)buffer,
+        .len = fileSize + extraBytesToAllocate
+    };
+}
+
+String ReadAllTextFromFile(const char* filename)
+{
+    ByteBuffer bytes = ReadAllBytesFromFile(filename, 1);
+    return {
+        .data = (char*)bytes.data,
+        .len = bytes.len - 1
     };
 }
 
@@ -658,19 +745,6 @@ float Clamp(float min, float max, float value)
         return value;
 }
 
-struct Vec2
-{
-    float x;
-    float y;
-};
-
-struct Vec3
-{
-    float x;
-    float y;
-    float z;
-};
-
 Vec3 operator + (const Vec3& one, const Vec3& other)
 {
     return {
@@ -730,14 +804,6 @@ Vec3 Cross(const Vec3& one, const Vec3& other)
         .z = one.x * other.y - one.y * other.x 
     };
 }
-
-struct Vec4
-{
-    float x;
-    float y;
-    float z;
-    float w;
-};
 
 Vec4 operator + (const Vec4& one, const Vec4& other)
 {
@@ -1108,6 +1174,12 @@ struct PhongShaderData
     alignas(16) Vec3 camPosition;
 };
 CHECK_CBUFFER_ALIGNMENT(PhongShaderData);
+
+struct TextShaderData
+{
+    Vec4 color;
+};
+CHECK_CBUFFER_ALIGNMENT(TextShaderData);
 
 ID3D11Buffer* CreateDx11ConstantBuffer(UINT dataByteSize, Dx11* dx)
 {
@@ -1837,6 +1909,23 @@ void DrawDx11Model(Dx11* dx, Dx11ModelData& model, ID3D11InputLayout* inputLayou
     dx->context->Draw(model.vertexCount, 0);
 }
 
+void DrawText(Dx11* dx, UINT textLen, Dx11VertexBuffer& positionVertexBuffer, Dx11VertexBuffer& instanceVertexBuffer, 
+    ID3D11InputLayout* inputLayout, const Dx11Program& program, 
+    void* programData, UINT programDataByteSize)
+{
+    UINT dummyOffset = 0;
+    dx->context->IASetVertexBuffers(0, 1, &positionVertexBuffer.buffer, &positionVertexBuffer.stride, &dummyOffset);
+    dx->context->IASetVertexBuffers(1, 1, &instanceVertexBuffer.buffer, &instanceVertexBuffer.stride, &dummyOffset);
+    dx->context->IASetInputLayout(inputLayout);
+    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx->context->VSSetShader(program.vs, nullptr, 0);
+    dx->context->PSSetShader(program.ps, nullptr, 0);
+
+    UploadDataToConstantBuffer(program.cBuffer, programData, programDataByteSize, dx);
+    dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx->context->DrawInstanced(6, textLen, 0, 0);
+}
+
 struct Dx11DepthStencilBuffer
 {
     ID3D11Texture2D* buffer;
@@ -1965,6 +2054,120 @@ static Vec3 lineVertices[] = {
     {  0.5f, 0.0f, 0.0f }
 };
 
+static Vec3 quadVertices[] = {
+    { 0.0f, 0.0f, 0.0f },
+    { 0.0f, -1.0f, 0.0f },
+    { 1.0f, -1.0f, 0.0f },
+    { 1.0f, -1.0f, 0.0f },
+    { 1.0f, 0.0f, 0.0f },
+    { 0.0f, 0.0f, 0.0f }
+};
+
+struct BakedCharMap
+{
+    ByteBuffer ttf;
+    unsigned char* fontBitmap;
+    int fontBitmapWidth;
+    int fontBitmapHeight;
+    int startChar;
+    stbtt_bakedchar* bakedChars;
+};
+
+void FreeBakedCharMap(BakedCharMap* bakedCharMap)
+{
+    free(bakedCharMap->ttf.data);
+    free(bakedCharMap->fontBitmap);
+    free(bakedCharMap->bakedChars);
+    *bakedCharMap = {};
+}
+
+BakedCharMap BakeCharMapForFont(const char* fontName, float fontHeight)
+{
+    ByteBuffer ttfBuffer = ReadAllBytesFromFile(fontName, 0);
+    
+    int fontBitmapWidth = 1024;
+    int fontBitmapHeight = 1024;
+    // one-channel bitmap
+    unsigned char* fontBitmapBuffer = (unsigned char*)calloc(1, fontBitmapWidth * fontBitmapHeight);
+    ASSERT(fontBitmapBuffer != nullptr);
+    
+    // from space to end of ASCII
+    int startChar = 32;
+    int nrOfChars = 96;
+    stbtt_bakedchar* bakedChars = (stbtt_bakedchar*)calloc(1, nrOfChars * sizeof(stbtt_bakedchar));
+    ASSERT(bakedChars != nullptr);
+
+    int bakeRes = stbtt_BakeFontBitmap(
+        ttfBuffer.data,
+        0,
+        fontHeight,
+        fontBitmapBuffer,
+        fontBitmapWidth,
+        fontBitmapHeight,
+        startChar,
+        nrOfChars,
+        bakedChars
+    );
+    ASSERT(bakeRes > 0);
+
+    return {
+        .ttf = ttfBuffer,
+        .fontBitmap = fontBitmapBuffer,
+        .fontBitmapWidth = fontBitmapWidth,
+        .fontBitmapHeight = fontBitmapHeight,
+        .startChar = startChar,
+        .bakedChars = bakedChars
+    };
+}
+
+struct CharQuadInstanceData
+{
+    Mat4 xformMat;
+    Vec2 texCoords[6];
+};
+
+void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text, Vec2 position, 
+    Mat4& orthoProjMat, CharQuadInstanceData* instanceData)
+{
+    for(int i = 0; i < text.len; i++) {
+        int c = (int)text.data[i];
+        stbtt_aligned_quad quad = {};
+        stbtt_GetBakedQuad(
+            bakedCharMap.bakedChars,
+            bakedCharMap.fontBitmapWidth,
+            bakedCharMap.fontBitmapHeight,
+            c - bakedCharMap.startChar,
+            &position.x, 
+            &position.y,
+            &quad,
+            1
+        );
+
+        // quad origin = top left
+        Transform transform = {
+            .position = { quad.x0, quad.y0, 0.0f },
+            .scale =    { quad.x1 - quad.x0, quad.y1 - quad.y0, 1.0f }
+        };
+
+        Vec2 topLeftTexCoord =      { quad.s0, quad.t0 };
+        Vec2 bottomLeftTexCoord =   { quad.s0, quad.t1 };
+        Vec2 bottomRightTexCoord =  { quad.s1, quad.t1 };
+        Vec2 topRightTexCoord =     { quad.s1, quad.t0 };
+
+        instanceData[i] = {
+            .xformMat = orthoProjMat * GetModelMatFromTransform(transform),
+            .texCoords = {
+                topLeftTexCoord,
+                bottomLeftTexCoord,
+                bottomRightTexCoord,
+                bottomRightTexCoord,
+                topRightTexCoord,
+                topLeftTexCoord
+            }
+        };
+    }
+}
+
 // GOAL: 
 // =============================================
 // Load a textured 3D model from an .obj file 
@@ -2000,6 +2203,9 @@ int main()
     Dx11Program phongProgram = CreateDx11ProgramFromFiles("res/phongvs.hlsl", "res/phongps.hlsl", sizeof(PhongShaderData), &dx);
     ID3D11InputLayout* phongInputLayout = CreatePhongDx11InputLayout(&dx, phongProgram.vsByteCode);
 
+    Dx11Program textProgram = CreateDx11ProgramFromFiles("res/textvs.hlsl", "res/textps.hlsl", sizeof(TextShaderData), &dx);
+    ID3D11InputLayout* textInputLayout = CreateTextDx11InputLayout(&dx, textProgram.vsByteCode);
+
     Transform cubeTransform = {
         .position = { 1.5f, 4.5f, -1.5f },
         .scale = { 0.4f, 0.4f, 0.4f }
@@ -2016,6 +2222,8 @@ int main()
 
     Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
 
+    Dx11VertexBuffer textPositionVertexBuffer = CreateStaticDx11VertexBuffer(quadVertices, sizeof(quadVertices), 3 * sizeof(float), 0, &dx);
+
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f, PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f));
     ToggleCamControl(&cam, true);
 
@@ -2030,6 +2238,16 @@ int main()
         .moveUp       = { .key = Vkey::Space },
         .devToggle    = { .key = Vkey::F1 }
     };
+
+    Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
+    BakedCharMap bakedCharMap = BakeCharMapForFont("res/CourierPrime-Regular.ttf", 64.0f);
+    char text[] = "Hello";
+    int maxQuadInstances = 16;
+    CharQuadInstanceData* charQuadInstanceData = (CharQuadInstanceData*)calloc(1, maxQuadInstances * sizeof(CharQuadInstanceData));
+    ASSERT(charQuadInstanceData != nullptr);
+    GenerateQuadInstanceDataForStringAt(bakedCharMap, { text, ARRAY_LEN(text) - 1 }, { 100.0f, 100.0f }, orthoProjMat, charQuadInstanceData);
+    Dx11VertexBuffer textInstanceVertexBuffer = CreateStaticDx11VertexBuffer(charQuadInstanceData, 
+        maxQuadInstances * sizeof(CharQuadInstanceData), sizeof(CharQuadInstanceData), 0, &dx);
 
     Timer timer = CreateTimer();
 
@@ -2085,22 +2303,40 @@ int main()
 
         DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
+        Transform quadTransform = {
+            .position = { 0.0f, 100.0f, 0.0f },
+            .scale = { 100.0f, 100.0f, 1.0f }
+        };
+
+        TextShaderData textShaderData = {
+            .color = { 1.0f, 0.0f, 0.0f, 0.0f }
+        };
+        DrawText(&dx, ARRAY_LEN(text) - 1, textPositionVertexBuffer, textInstanceVertexBuffer, textInputLayout, textProgram,
+            &textShaderData, sizeof(textShaderData));
+
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
         printf("delta time: %f\n", timer.deltaTime);
     }
+
+    free(charQuadInstanceData);
+    FreeBakedCharMap(&bakedCharMap);
 
     FreeDx11ModelData(&monkeyDx11Model);
     FreeObjModel(&monkeyObjModel);
     
     FreeDx11ModelData(&cubeDx11Model);
 
+    textInputLayout->Release();
     basicColorInputLayout->Release();
     phongInputLayout->Release();
 
+    FreeDx11Program(&textProgram);
     FreeDx11Program(&basicColorProgram);
     FreeDx11Program(&phongProgram);
 
+    FreeDx11VertexBuffer(&textInstanceVertexBuffer);
+    FreeDx11VertexBuffer(&textPositionVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
     
     rasterizerState->Release();
