@@ -570,7 +570,7 @@ ID3D11InputLayout* CreateTextDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
         CreateDx11InputElDesc(InputElType::Matrix, 2, 1, 2 * sizeof(Vec4), true, instanceStepRate),
         CreateDx11InputElDesc(InputElType::Matrix, 3, 1, 3 * sizeof(Vec4), true, instanceStepRate),
 
-        CreateDx11InputElDesc(InputElType::TexCoord, 0, 1, 0, true, 1),
+        CreateDx11InputElDesc(InputElType::TexCoord, 0, 1, 4 * sizeof(Vec4), true, 1),
         CreateDx11InputElDesc(InputElType::TexCoord, 1, 1, (4 * sizeof(Vec4)) + (1 * sizeof(Vec2)), true, instanceStepRate),
         CreateDx11InputElDesc(InputElType::TexCoord, 2, 1, (4 * sizeof(Vec4)) + (2 * sizeof(Vec2)), true, instanceStepRate),
         CreateDx11InputElDesc(InputElType::TexCoord, 3, 1, (4 * sizeof(Vec4)) + (3 * sizeof(Vec2)), true, instanceStepRate),
@@ -1854,6 +1854,182 @@ void FreeDx11ModelData(Dx11ModelData* modelData)
     *modelData = {};
 }
 
+struct BakedCharMap
+{
+    ByteBuffer ttf;
+    unsigned char* fontBitmap;
+    int fontBitmapWidth;
+    int fontBitmapHeight;
+    int startChar;
+    stbtt_bakedchar* bakedChars;
+};
+
+void FreeBakedCharMap(BakedCharMap* bakedCharMap)
+{
+    free(bakedCharMap->ttf.data);
+    free(bakedCharMap->fontBitmap);
+    free(bakedCharMap->bakedChars);
+    *bakedCharMap = {};
+}
+
+BakedCharMap BakeCharMapForFont(const char* fontName, float fontHeight)
+{
+    ByteBuffer ttfBuffer = ReadAllBytesFromFile(fontName, 0);
+    
+    int fontBitmapWidth = 1024;
+    int fontBitmapHeight = 1024;
+    // one-channel bitmap
+    unsigned char* fontBitmapBuffer = (unsigned char*)calloc(1, fontBitmapWidth * fontBitmapHeight);
+    ASSERT(fontBitmapBuffer != nullptr);
+    
+    // from space to end of ASCII
+    int startChar = 32;
+    int nrOfChars = 96;
+    stbtt_bakedchar* bakedChars = (stbtt_bakedchar*)calloc(1, nrOfChars * sizeof(stbtt_bakedchar));
+    ASSERT(bakedChars != nullptr);
+
+    int bakeRes = stbtt_BakeFontBitmap(
+        ttfBuffer.data,
+        0,
+        fontHeight,
+        fontBitmapBuffer,
+        fontBitmapWidth,
+        fontBitmapHeight,
+        startChar,
+        nrOfChars,
+        bakedChars
+    );
+    ASSERT(bakeRes > 0);
+
+    return {
+        .ttf = ttfBuffer,
+        .fontBitmap = fontBitmapBuffer,
+        .fontBitmapWidth = fontBitmapWidth,
+        .fontBitmapHeight = fontBitmapHeight,
+        .startChar = startChar,
+        .bakedChars = bakedChars
+    };
+}
+
+struct CharQuadInstanceData
+{
+    Mat4 xformMat;
+    Vec2 texCoords[6];
+};
+
+void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text, Vec2 position, 
+    Mat4& orthoProjMat, CharQuadInstanceData* instanceData)
+{
+    for(int i = 0; i < text.len; i++) {
+        int c = (int)text.data[i];
+        stbtt_aligned_quad quad = {};
+        stbtt_GetBakedQuad(
+            bakedCharMap.bakedChars,
+            bakedCharMap.fontBitmapWidth,
+            bakedCharMap.fontBitmapHeight,
+            c - bakedCharMap.startChar,
+            &position.x, 
+            &position.y,
+            &quad,
+            1
+        );
+
+        // quad origin = top left
+        Transform transform = {
+            .position = { quad.x0, quad.y0, 0.0f },
+            .scale =    { quad.x1 - quad.x0, quad.y1 - quad.y0, 1.0f }
+        };
+
+        Vec2 topLeftTexCoord =      { quad.s0, quad.t0 };
+        Vec2 bottomLeftTexCoord =   { quad.s0, quad.t1 };
+        Vec2 bottomRightTexCoord =  { quad.s1, quad.t1 };
+        Vec2 topRightTexCoord =     { quad.s1, quad.t0 };
+
+        instanceData[i] = {
+            .xformMat = orthoProjMat * GetModelMatFromTransform(transform),
+            .texCoords = {
+                topLeftTexCoord,
+                bottomLeftTexCoord,
+                bottomRightTexCoord,
+                bottomRightTexCoord,
+                topRightTexCoord,
+                topLeftTexCoord
+            }
+        };
+    }
+}
+
+struct Dx11ShaderTexture2D
+{
+    ID3D11Texture2D* texture;
+    ID3D11ShaderResourceView* view;
+};
+
+void FreeDx11ShaderTexture2D(Dx11ShaderTexture2D* shaderTex)
+{
+    shaderTex->texture->Release();   
+    shaderTex->view->Release();   
+    *shaderTex = {};
+}
+
+ID3D11SamplerState* CreateDx11TextureSampler(Dx11& dx)
+{
+    D3D11_SAMPLER_DESC samplerDesc = {
+        .Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+        .AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+        .AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+        .AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+        .MaxAnisotropy = 1,
+        .ComparisonFunc = D3D11_COMPARISON_ALWAYS
+    };
+
+    ID3D11SamplerState* sampler = nullptr;
+    HRESULT res = dx.device->CreateSamplerState(&samplerDesc, &sampler);
+    ASSERT(res == S_OK);
+
+    return sampler;
+}
+
+Dx11ShaderTexture2D CreateDx11ShaderTextureForBakedCharMap(Dx11& dx, BakedCharMap& bakedCharMap)
+{
+    D3D11_TEXTURE2D_DESC texDesc = {
+        .Width = (UINT)bakedCharMap.fontBitmapWidth,
+        .Height = (UINT)bakedCharMap.fontBitmapHeight,
+        .MipLevels = 1,
+        .ArraySize = 1,
+        .Format = DXGI_FORMAT_R8_UNORM,
+        .SampleDesc = { .Count = 1 },
+        .Usage = D3D11_USAGE_IMMUTABLE,
+        .BindFlags = D3D11_BIND_SHADER_RESOURCE
+    };
+
+    D3D11_SUBRESOURCE_DATA texData = {
+        .pSysMem = bakedCharMap.fontBitmap,
+        .SysMemPitch = (UINT)bakedCharMap.fontBitmapWidth
+    };
+
+    ID3D11Texture2D* tex = nullptr;
+    HRESULT res = dx.device->CreateTexture2D(
+        &texDesc,
+        &texData,
+        &tex
+    );
+    ASSERT(res == S_OK);
+
+    ID3D11ShaderResourceView* view = nullptr;
+    res = dx.device->CreateShaderResourceView(
+        tex,
+        nullptr,
+        &view
+    );
+    ASSERT(res == S_OK);
+
+    return {
+        .texture = tex,
+        .view = view
+    };
+}
+
 void DrawLine(Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, Dx11* dx, const FpsCam& cam)
 {
     BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
@@ -1911,7 +2087,7 @@ void DrawDx11Model(Dx11* dx, Dx11ModelData& model, ID3D11InputLayout* inputLayou
 
 void DrawText(Dx11* dx, UINT textLen, Dx11VertexBuffer& positionVertexBuffer, Dx11VertexBuffer& instanceVertexBuffer, 
     ID3D11InputLayout* inputLayout, const Dx11Program& program, 
-    void* programData, UINT programDataByteSize)
+    void* programData, UINT programDataByteSize, Dx11ShaderTexture2D& shaderTex, ID3D11SamplerState* shaderTexSampler)
 {
     UINT dummyOffset = 0;
     dx->context->IASetVertexBuffers(0, 1, &positionVertexBuffer.buffer, &positionVertexBuffer.stride, &dummyOffset);
@@ -1923,6 +2099,8 @@ void DrawText(Dx11* dx, UINT textLen, Dx11VertexBuffer& positionVertexBuffer, Dx
 
     UploadDataToConstantBuffer(program.cBuffer, programData, programDataByteSize, dx);
     dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx->context->PSSetSamplers(0, 1, &shaderTexSampler);
+    dx->context->PSSetShaderResources(0, 1, &shaderTex.view);
     dx->context->DrawInstanced(6, textLen, 0, 0);
 }
 
@@ -2063,117 +2241,12 @@ static Vec3 quadVertices[] = {
     { 0.0f, 0.0f, 0.0f }
 };
 
-struct BakedCharMap
-{
-    ByteBuffer ttf;
-    unsigned char* fontBitmap;
-    int fontBitmapWidth;
-    int fontBitmapHeight;
-    int startChar;
-    stbtt_bakedchar* bakedChars;
-};
-
-void FreeBakedCharMap(BakedCharMap* bakedCharMap)
-{
-    free(bakedCharMap->ttf.data);
-    free(bakedCharMap->fontBitmap);
-    free(bakedCharMap->bakedChars);
-    *bakedCharMap = {};
-}
-
-BakedCharMap BakeCharMapForFont(const char* fontName, float fontHeight)
-{
-    ByteBuffer ttfBuffer = ReadAllBytesFromFile(fontName, 0);
-    
-    int fontBitmapWidth = 1024;
-    int fontBitmapHeight = 1024;
-    // one-channel bitmap
-    unsigned char* fontBitmapBuffer = (unsigned char*)calloc(1, fontBitmapWidth * fontBitmapHeight);
-    ASSERT(fontBitmapBuffer != nullptr);
-    
-    // from space to end of ASCII
-    int startChar = 32;
-    int nrOfChars = 96;
-    stbtt_bakedchar* bakedChars = (stbtt_bakedchar*)calloc(1, nrOfChars * sizeof(stbtt_bakedchar));
-    ASSERT(bakedChars != nullptr);
-
-    int bakeRes = stbtt_BakeFontBitmap(
-        ttfBuffer.data,
-        0,
-        fontHeight,
-        fontBitmapBuffer,
-        fontBitmapWidth,
-        fontBitmapHeight,
-        startChar,
-        nrOfChars,
-        bakedChars
-    );
-    ASSERT(bakeRes > 0);
-
-    return {
-        .ttf = ttfBuffer,
-        .fontBitmap = fontBitmapBuffer,
-        .fontBitmapWidth = fontBitmapWidth,
-        .fontBitmapHeight = fontBitmapHeight,
-        .startChar = startChar,
-        .bakedChars = bakedChars
-    };
-}
-
-struct CharQuadInstanceData
-{
-    Mat4 xformMat;
-    Vec2 texCoords[6];
-};
-
-void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text, Vec2 position, 
-    Mat4& orthoProjMat, CharQuadInstanceData* instanceData)
-{
-    for(int i = 0; i < text.len; i++) {
-        int c = (int)text.data[i];
-        stbtt_aligned_quad quad = {};
-        stbtt_GetBakedQuad(
-            bakedCharMap.bakedChars,
-            bakedCharMap.fontBitmapWidth,
-            bakedCharMap.fontBitmapHeight,
-            c - bakedCharMap.startChar,
-            &position.x, 
-            &position.y,
-            &quad,
-            1
-        );
-
-        // quad origin = top left
-        Transform transform = {
-            .position = { quad.x0, quad.y0, 0.0f },
-            .scale =    { quad.x1 - quad.x0, quad.y1 - quad.y0, 1.0f }
-        };
-
-        Vec2 topLeftTexCoord =      { quad.s0, quad.t0 };
-        Vec2 bottomLeftTexCoord =   { quad.s0, quad.t1 };
-        Vec2 bottomRightTexCoord =  { quad.s1, quad.t1 };
-        Vec2 topRightTexCoord =     { quad.s1, quad.t0 };
-
-        instanceData[i] = {
-            .xformMat = orthoProjMat * GetModelMatFromTransform(transform),
-            .texCoords = {
-                topLeftTexCoord,
-                bottomLeftTexCoord,
-                bottomRightTexCoord,
-                bottomRightTexCoord,
-                topRightTexCoord,
-                topLeftTexCoord
-            }
-        };
-    }
-}
-
 // GOAL: 
 // =============================================
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: text rendering
+// TODO: fix text alignment
 // TODO: draw fps & model stats text on screen
 // TODO: mouse click + drag controls for model rotation
 // TODO: optimize grid drawing
@@ -2241,6 +2314,8 @@ int main()
 
     Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
     BakedCharMap bakedCharMap = BakeCharMapForFont("res/CourierPrime-Regular.ttf", 64.0f);
+    Dx11ShaderTexture2D bakedCharMapShaderTex = CreateDx11ShaderTextureForBakedCharMap(dx, bakedCharMap);
+    ID3D11SamplerState* texSampler = CreateDx11TextureSampler(dx);
     char text[] = "Hello";
     int maxQuadInstances = 16;
     CharQuadInstanceData* charQuadInstanceData = (CharQuadInstanceData*)calloc(1, maxQuadInstances * sizeof(CharQuadInstanceData));
@@ -2250,6 +2325,24 @@ int main()
         maxQuadInstances * sizeof(CharQuadInstanceData), sizeof(CharQuadInstanceData), 0, &dx);
 
     Timer timer = CreateTimer();
+
+    D3D11_BLEND_DESC blendDesc = {};
+    blendDesc.RenderTarget[0] = {
+        .BlendEnable = TRUE,
+        .SrcBlend = D3D11_BLEND_SRC_ALPHA,
+        .DestBlend = D3D11_BLEND_INV_SRC_ALPHA,
+        .BlendOp = D3D11_BLEND_OP_ADD,
+        .SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA,
+        .DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA,
+        .BlendOpAlpha = D3D11_BLEND_OP_ADD,
+        .RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL
+    };
+    ID3D11BlendState* blendState = nullptr;
+    HRESULT blendRes = dx.device->CreateBlendState(
+        &blendDesc,
+        &blendState
+    );
+    ASSERT(blendRes == S_OK);
 
     ShowWindow(window);
     while(true)
@@ -2279,6 +2372,7 @@ int main()
         dx.context->RSSetState(rasterizerState);
         dx.context->OMSetRenderTargets(1, &backbuffer.view, dsBuffer.view);
         dx.context->OMSetDepthStencilState(dsState, 1);
+        dx.context->OMSetBlendState(blendState, nullptr, 0xffffffff);
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
 
@@ -2303,16 +2397,11 @@ int main()
 
         DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
-        Transform quadTransform = {
-            .position = { 0.0f, 100.0f, 0.0f },
-            .scale = { 100.0f, 100.0f, 1.0f }
-        };
-
         TextShaderData textShaderData = {
             .color = { 1.0f, 0.0f, 0.0f, 0.0f }
         };
         DrawText(&dx, ARRAY_LEN(text) - 1, textPositionVertexBuffer, textInstanceVertexBuffer, textInputLayout, textProgram,
-            &textShaderData, sizeof(textShaderData));
+            &textShaderData, sizeof(textShaderData), bakedCharMapShaderTex, texSampler);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
@@ -2320,6 +2409,8 @@ int main()
     }
 
     free(charQuadInstanceData);
+    texSampler->Release();
+    FreeDx11ShaderTexture2D(&bakedCharMapShaderTex);
     FreeBakedCharMap(&bakedCharMap);
 
     FreeDx11ModelData(&monkeyDx11Model);

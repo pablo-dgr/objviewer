@@ -14,12 +14,14 @@ struct VsOutput
 {
     float4 position : SV_POSITION;
     float4 color: COLOR;
+    float2 texCoord: TEXCOORD;
 };
 
-VsOutput main(VsInput input)
+VsOutput main(VsInput input, unsigned int vertexId : SV_VertexID)
 {
     VsOutput output;
     output.position = mul(input.xformMat, float4(input.position.xyz, 1.0f));
     output.color = color;
+    output.texCoord = input.texCoords[vertexId];
     return output;
 }
