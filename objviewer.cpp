@@ -432,21 +432,40 @@ void FreeDx11VertexBuffer(Dx11VertexBuffer* vertexBuffer)
     *vertexBuffer = {};
 }
 
-Dx11VertexBuffer CreateStaticDx11VertexBuffer(void* data, size_t byteSize, UINT stride, UINT byteOffset, Dx11* dx)
+enum class BufferUsageType
 {
+    Static,
+    Dynamic
+};
+
+Dx11VertexBuffer CreateDx11VertexBuffer(Dx11& dx, BufferUsageType usageType, void* data, size_t byteSize, UINT stride, UINT byteOffset)
+{
+    D3D11_USAGE usage = D3D11_USAGE_IMMUTABLE;
+    UINT cpuAccess = 0;
+
+    if(usageType == BufferUsageType::Dynamic) {
+        usage = D3D11_USAGE_DYNAMIC;
+        cpuAccess |= D3D11_CPU_ACCESS_WRITE;
+    }
+
     D3D11_BUFFER_DESC vertexBufferDesc = {
         .ByteWidth = (UINT)byteSize,
-        .Usage = D3D11_USAGE_IMMUTABLE,
-        .BindFlags = D3D11_BIND_VERTEX_BUFFER
+        .Usage = usage,
+        .BindFlags = D3D11_BIND_VERTEX_BUFFER,
+        .CPUAccessFlags = cpuAccess
     };
 
-    D3D11_SUBRESOURCE_DATA vertexBufData = {
-        .pSysMem = data
-    };
+    D3D11_SUBRESOURCE_DATA vertexBufData;
+    D3D11_SUBRESOURCE_DATA* vertexBufDataPtr;
+    if(data != nullptr) {
+        vertexBufData = { .pSysMem = data };
+        vertexBufDataPtr = &vertexBufData;
+    }
 
     ID3D11Buffer* vertexBuffer = nullptr;
-    HRESULT res = dx->device->CreateBuffer(&vertexBufferDesc, &vertexBufData, &vertexBuffer);
+    HRESULT res = dx.device->CreateBuffer(&vertexBufferDesc, vertexBufDataPtr, &vertexBuffer);
     ASSERT(res == S_OK);
+
     return {
         .buffer = vertexBuffer,
         .stride = stride,
@@ -1224,13 +1243,13 @@ ID3D11Buffer* CreateDx11ConstantBuffer(UINT dataByteSize, Dx11* dx)
     return cBuffer;
 }
 
-void UploadDataToConstantBuffer(ID3D11Buffer* cBuffer, void* data, UINT dataByteSize, Dx11* dx)
+void UploadDataToBuffer(Dx11& dx, ID3D11Buffer* buffer, void* data, UINT dataByteSize)
 {
     D3D11_MAPPED_SUBRESOURCE mappedRes = {};
-    HRESULT res = dx->context->Map(cBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedRes);
+    HRESULT res = dx.context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedRes);
     ASSERT(res == S_OK);
     memcpy(mappedRes.pData, data, dataByteSize);
-    dx->context->Unmap(cBuffer, 0);
+    dx.context->Unmap(buffer, 0);
 }
 
 void ResizeDx11Backbuffer(Dx11Backbuffer* backbuffer, UINT newWidth, UINT newHeight, Dx11* dx)
@@ -1445,6 +1464,16 @@ struct StringView
     const char* start;
     size_t len;
 };
+
+StringView StringViewFromCString(const char* str)
+{
+    StringView view = { .start = str };
+    
+    while(str[view.len])
+        view.len++;
+
+    return view;
+}
 
 struct StringReader
 {
@@ -1940,11 +1969,14 @@ struct CharQuadInstanceData
     Vec2 texCoords[6];
 };
 
-void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text, Vec2 position, 
-    Mat4& orthoProjMat, CharQuadInstanceData* instanceData)
+size_t GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, StringView text, Vec2 position, 
+    Mat4& orthoProjMat, CharQuadInstanceData* instanceData, size_t maxInstances, size_t startIndex)
 {
-    for(int i = 0; i < text.len; i++) {
-        int c = (int)text.data[i];
+    size_t genCount = 0;
+    size_t readIndex = 0;
+    size_t writeIndex = startIndex;
+    while(writeIndex < maxInstances && readIndex < text.len) {
+        int c = (int)text.start[readIndex];
         stbtt_aligned_quad quad = {};
         stbtt_GetBakedQuad(
             bakedCharMap.bakedChars,
@@ -1983,7 +2015,7 @@ void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text
         Vec2 bottomRightTexCoord =  { quad.s1, quad.t1 };
         Vec2 topRightTexCoord =     { quad.s1, quad.t0 };
 
-        instanceData[i] = {
+        instanceData[writeIndex] = {
             .xformMat = orthoProjMat * GetModelMatFromTransform(transform),
             .texCoords = {
                 topLeftTexCoord,
@@ -1994,7 +2026,13 @@ void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text
                 topLeftTexCoord
             }
         };
+
+        genCount++;
+        writeIndex++;
+        readIndex++;
     }
+
+    return genCount;
 }
 
 struct Dx11ShaderTexture2D
@@ -2068,24 +2106,24 @@ Dx11ShaderTexture2D CreateDx11ShaderTextureForBakedCharMap(Dx11& dx, BakedCharMa
     };
 }
 
-void DrawLine(Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, Dx11* dx, const FpsCam& cam)
+void DrawLine(Dx11& dx, Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer* cBuffer, const FpsCam& cam)
 {
     BasicColorShaderData shaderData = { .color = { 0.0f, 0.0f, 0.0f, 1.0f } };
     Mat4 modelMat = TranslateMat4(position) * ScaleMat4(scale) * RotateEulerYMat4(toRadians(yRotation));
     shaderData.xformMat = cam.projMat * cam.viewMat * modelMat;
-    UploadDataToConstantBuffer(cBuffer, &shaderData, sizeof(shaderData), dx);
-    dx->context->VSSetConstantBuffers(0, 1, &cBuffer);
-    dx->context->Draw(2, 0);
+    UploadDataToBuffer(dx, cBuffer, &shaderData, sizeof(shaderData));
+    dx.context->VSSetConstantBuffers(0, 1, &cBuffer);
+    dx.context->Draw(2, 0);
 }
 
-void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer* vertexBuffer, 
+void DrawLineGrid(Dx11& dx, int xSquaresHalf, int zSquaresHalf, Dx11VertexBuffer* vertexBuffer, 
     ID3D11InputLayout* inputLayout, Dx11Program* program, const FpsCam& cam)
 {
-    dx->context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    dx->context->VSSetShader(program->vs, nullptr, 0);
-    dx->context->PSSetShader(program->ps, nullptr, 0);
+    dx.context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
+    dx.context->IASetInputLayout(inputLayout);
+    dx.context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    dx.context->VSSetShader(program->vs, nullptr, 0);
+    dx.context->PSSetShader(program->ps, nullptr, 0);
 
     int nrOfXLines = 1 + (zSquaresHalf * 2);
     int nrOfZLines = 1 + (xSquaresHalf * 2);
@@ -2096,7 +2134,7 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.z = (float)i;
         position.z -= (float)((nrOfXLines - 1) / 2);
         float xLineLen = (float)(nrOfZLines - 1);
-        DrawLine(position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, dx, cam);
+        DrawLine(dx, position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, cam);
     }
 
     // draw lines parallel to z-axis
@@ -2105,41 +2143,41 @@ void DrawLineGrid(int xSquaresHalf, int zSquaresHalf, Dx11* dx, Dx11VertexBuffer
         position.x = (float)i;
         position.x -= (float)((nrOfZLines - 1) / 2);
         float zLineLen = (float)(nrOfXLines - 1);
-        DrawLine(position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, dx, cam);
+        DrawLine(dx, position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, cam);
     }
 }
 
-void DrawDx11Model(Dx11* dx, Dx11ModelData& model, ID3D11InputLayout* inputLayout, const Dx11Program& program, 
+void DrawDx11Model(Dx11& dx, Dx11ModelData& model, ID3D11InputLayout* inputLayout, const Dx11Program& program, 
     void* programData, UINT programDataByteSize)
 {
-    dx->context->IASetVertexBuffers(0, model.vertexBufferCount, model.vertexBuffers, model.vertexBufferStrides, model.vertexBufferOffsets);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(program.vs, nullptr, 0);
-    dx->context->PSSetShader(program.ps, nullptr, 0);
+    dx.context->IASetVertexBuffers(0, model.vertexBufferCount, model.vertexBuffers, model.vertexBufferStrides, model.vertexBufferOffsets);
+    dx.context->IASetInputLayout(inputLayout);
+    dx.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx.context->VSSetShader(program.vs, nullptr, 0);
+    dx.context->PSSetShader(program.ps, nullptr, 0);
 
-    UploadDataToConstantBuffer(program.cBuffer, programData, programDataByteSize, dx);
-    dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
-    dx->context->Draw(model.vertexCount, 0);
+    UploadDataToBuffer(dx, program.cBuffer, programData, programDataByteSize);
+    dx.context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx.context->Draw(model.vertexCount, 0);
 }
 
-void DrawText(Dx11* dx, UINT textLen, Dx11VertexBuffer& positionVertexBuffer, Dx11VertexBuffer& instanceVertexBuffer, 
+void DrawText(Dx11& dx, UINT textLen, Dx11VertexBuffer& positionVertexBuffer, Dx11VertexBuffer& instanceVertexBuffer, 
     ID3D11InputLayout* inputLayout, const Dx11Program& program, 
     void* programData, UINT programDataByteSize, Dx11ShaderTexture2D& shaderTex, ID3D11SamplerState* shaderTexSampler)
 {
     UINT dummyOffset = 0;
-    dx->context->IASetVertexBuffers(0, 1, &positionVertexBuffer.buffer, &positionVertexBuffer.stride, &dummyOffset);
-    dx->context->IASetVertexBuffers(1, 1, &instanceVertexBuffer.buffer, &instanceVertexBuffer.stride, &dummyOffset);
-    dx->context->IASetInputLayout(inputLayout);
-    dx->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx->context->VSSetShader(program.vs, nullptr, 0);
-    dx->context->PSSetShader(program.ps, nullptr, 0);
+    dx.context->IASetVertexBuffers(0, 1, &positionVertexBuffer.buffer, &positionVertexBuffer.stride, &dummyOffset);
+    dx.context->IASetVertexBuffers(1, 1, &instanceVertexBuffer.buffer, &instanceVertexBuffer.stride, &dummyOffset);
+    dx.context->IASetInputLayout(inputLayout);
+    dx.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx.context->VSSetShader(program.vs, nullptr, 0);
+    dx.context->PSSetShader(program.ps, nullptr, 0);
 
-    UploadDataToConstantBuffer(program.cBuffer, programData, programDataByteSize, dx);
-    dx->context->VSSetConstantBuffers(0, 1, &program.cBuffer);
-    dx->context->PSSetSamplers(0, 1, &shaderTexSampler);
-    dx->context->PSSetShaderResources(0, 1, &shaderTex.view);
-    dx->context->DrawInstanced(6, textLen, 0, 0);
+    UploadDataToBuffer(dx, program.cBuffer, programData, programDataByteSize);
+    dx.context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx.context->PSSetSamplers(0, 1, &shaderTexSampler);
+    dx.context->PSSetShaderResources(0, 1, &shaderTex.view);
+    dx.context->DrawInstanced(6, textLen, 0, 0);
 }
 
 struct Dx11DepthStencilBuffer
@@ -2284,7 +2322,6 @@ static Vec3 quadVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: draw fps & model stats text on screen
 // TODO: mouse click + drag controls for model rotation
 // TODO: optimize grid drawing
 int main()
@@ -2331,9 +2368,11 @@ int main()
     };
     Dx11ModelData monkeyDx11Model = CreateDx11ModelDataFromObjModel(dx, monkeyObjModel);
 
-    Dx11VertexBuffer lineVertexBuffer = CreateStaticDx11VertexBuffer(lineVertices, sizeof(lineVertices), 3 * sizeof(float), 0, &dx);
+    Dx11VertexBuffer lineVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, lineVertices, 
+        sizeof(lineVertices), 3 * sizeof(float), 0);
 
-    Dx11VertexBuffer textPositionVertexBuffer = CreateStaticDx11VertexBuffer(quadVertices, sizeof(quadVertices), 3 * sizeof(float), 0, &dx);
+    Dx11VertexBuffer textPositionVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, quadVertices, 
+        sizeof(quadVertices), 3 * sizeof(float), 0);
 
     FpsCam cam = CreateFpsCam({ 0.0f, 0.0f, 2.0f }, 5.0f, 6.0f, PerspectiveProjMat4(toRadians(45.0f), viewport.Width, viewport.Height, 0.1f, 100.0f));
     ToggleCamControl(&cam, true);
@@ -2351,16 +2390,16 @@ int main()
     };
 
     Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
-    BakedCharMap bakedCharMap = BakeCharMapForFont("res/CourierPrime-Regular.ttf", 64.0f);
+    BakedCharMap bakedCharMap = BakeCharMapForFont("res/CourierPrime-Regular.ttf", 32.0f);
     Dx11ShaderTexture2D bakedCharMapShaderTex = CreateDx11ShaderTextureForBakedCharMap(dx, bakedCharMap);
     ID3D11SamplerState* texSampler = CreateDx11TextureSampler(dx);
-    char text[] = "Hello";
-    int maxQuadInstances = 16;
-    CharQuadInstanceData* charQuadInstanceData = (CharQuadInstanceData*)calloc(1, maxQuadInstances * sizeof(CharQuadInstanceData));
-    ASSERT(charQuadInstanceData != nullptr);
-    GenerateQuadInstanceDataForStringAt(bakedCharMap, { text, ARRAY_LEN(text) - 1 }, { 100.0f, 100.0f }, orthoProjMat, charQuadInstanceData);
-    Dx11VertexBuffer textInstanceVertexBuffer = CreateStaticDx11VertexBuffer(charQuadInstanceData, 
-        maxQuadInstances * sizeof(CharQuadInstanceData), sizeof(CharQuadInstanceData), 0, &dx);
+
+    const size_t maxTextLen = 128;
+    char textBuffer[maxTextLen];
+    CharQuadInstanceData* textInstanceData = (CharQuadInstanceData*)calloc(1, maxTextLen * sizeof(CharQuadInstanceData));
+    ASSERT(textInstanceData != nullptr);
+    Dx11VertexBuffer textInstanceVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Dynamic, textInstanceData, 
+        maxTextLen * sizeof(CharQuadInstanceData), sizeof(CharQuadInstanceData), 0);
 
     Timer timer = CreateTimer();
 
@@ -2406,29 +2445,42 @@ int main()
             .lightPosition = cubeTransform.position,
             .camPosition = cam.position
         };
-        DrawDx11Model(&dx, monkeyDx11Model, phongInputLayout, phongProgram, &phongShaderData, sizeof(phongShaderData));
+        DrawDx11Model(dx, monkeyDx11Model, phongInputLayout, phongProgram, &phongShaderData, sizeof(phongShaderData));
 
         Mat4 cubeModelMat = GetModelMatFromTransform(cubeTransform);
         BasicColorShaderData basicColorShaderData = {
             .xformMat = cam.projMat * cam.viewMat * cubeModelMat,
             .color = { 1.0f, 1.0f, 1.0f, 1.0f } 
         };
-        DrawDx11Model(&dx, cubeDx11Model, basicColorInputLayout, basicColorProgram, &basicColorShaderData, sizeof(basicColorShaderData));
+        DrawDx11Model(dx, cubeDx11Model, basicColorInputLayout, basicColorProgram, &basicColorShaderData, sizeof(basicColorShaderData));
 
-        DrawLineGrid(6, 6, &dx, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
+        DrawLineGrid(dx, 6, 6, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
 
         TextShaderData textShaderData = {
-            .color = { 1.0f, 0.0f, 0.0f, 0.0f }
+            .color = { 1.0f, 1.0f, 1.0f, 1.0f }
         };
-        DrawText(&dx, ARRAY_LEN(text) - 1, textPositionVertexBuffer, textInstanceVertexBuffer, textInputLayout, textProgram,
+
+        size_t totalTextLen = 0;
+        memset(textBuffer, 0, maxTextLen);
+
+        sprintf(textBuffer, "frame time: %f (%d FPS)", timer.deltaTime, (int)(1.0f / timer.deltaTime));     
+        totalTextLen += GenerateQuadInstanceDataForStringAt(bakedCharMap,  StringViewFromCString(textBuffer), { 30.0f, 60.0f }, 
+            orthoProjMat, textInstanceData, maxTextLen, 0);
+
+        sprintf(textBuffer + totalTextLen + 1, "model vertices: %d", monkeyObjModel.vertexCount);     
+        totalTextLen += GenerateQuadInstanceDataForStringAt(bakedCharMap,  StringViewFromCString(textBuffer + totalTextLen + 1), { 30.0f, 35.0f }, 
+            orthoProjMat, textInstanceData, maxTextLen, totalTextLen);
+
+        UploadDataToBuffer(dx, textInstanceVertexBuffer.buffer, textInstanceData, maxTextLen * sizeof(CharQuadInstanceData));
+
+        DrawText(dx, totalTextLen, textPositionVertexBuffer, textInstanceVertexBuffer, textInputLayout, textProgram,
             &textShaderData, sizeof(textShaderData), bakedCharMapShaderTex, texSampler);
 
         dx.swapchain->Present(1, 0);
         UpdateTimer(&timer);
-        printf("delta time: %f\n", timer.deltaTime);
     }
 
-    free(charQuadInstanceData);
+    free(textInstanceData);
     texSampler->Release();
     FreeDx11ShaderTexture2D(&bakedCharMapShaderTex);
     FreeBakedCharMap(&bakedCharMap);
