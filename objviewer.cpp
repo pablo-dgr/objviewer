@@ -396,6 +396,29 @@ ID3D11RasterizerState* InitDx11RasterizerState(Dx11* dx)
     return rasterizerState;
 }
 
+ID3D11BlendState* InitDx11RasterizerBlendState(Dx11& dx)
+{
+    D3D11_BLEND_DESC blendDesc = {};
+    blendDesc.RenderTarget[0] = {
+        .BlendEnable = TRUE,
+        .SrcBlend = D3D11_BLEND_SRC_ALPHA,
+        .DestBlend = D3D11_BLEND_INV_SRC_ALPHA,
+        .BlendOp = D3D11_BLEND_OP_ADD,
+        .SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA,
+        .DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA,
+        .BlendOpAlpha = D3D11_BLEND_OP_ADD,
+        .RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL
+    };
+    ID3D11BlendState* blendState = nullptr;
+    HRESULT blendRes = dx.device->CreateBlendState(
+        &blendDesc,
+        &blendState
+    );
+    ASSERT(blendRes == S_OK);
+
+    return blendState;
+}
+
 struct Dx11VertexBuffer
 {
     ID3D11Buffer* buffer;
@@ -1934,10 +1957,25 @@ void GenerateQuadInstanceDataForStringAt(BakedCharMap& bakedCharMap, String text
             1
         );
 
-        // quad origin = top left
+        // NOTE: 
+        // STB quad origin = top left and extends to bottom right
+        // OUR quad origin = bottom left and extends to top right, so do OUR the orthographic coords
+        // ^ y
+        // |
+        // -----> x
+        // instead of:
+        // -----> x
+        // |
+        // v y
+
+        float baseLine = position.y;
+        float baseLineDiff = quad.y0 - baseLine;
+        float height = quad.y1 - quad.y0;
+        float correctedYPos = (baseLine - (height + baseLineDiff));
+
         Transform transform = {
-            .position = { quad.x0, quad.y0, 0.0f },
-            .scale =    { quad.x1 - quad.x0, quad.y1 - quad.y0, 1.0f }
+            .position = { quad.x0, correctedYPos, 0.0f },
+            .scale =    { quad.x1 - quad.x0, height, 1.0f }
         };
 
         Vec2 topLeftTexCoord =      { quad.s0, quad.t0 };
@@ -2233,12 +2271,12 @@ static Vec3 lineVertices[] = {
 };
 
 static Vec3 quadVertices[] = {
+    { 0.0f, 1.0f, 0.0f },
     { 0.0f, 0.0f, 0.0f },
-    { 0.0f, -1.0f, 0.0f },
-    { 1.0f, -1.0f, 0.0f },
-    { 1.0f, -1.0f, 0.0f },
     { 1.0f, 0.0f, 0.0f },
-    { 0.0f, 0.0f, 0.0f }
+    { 1.0f, 0.0f, 0.0f },
+    { 1.0f, 1.0f, 0.0f },
+    { 0.0f, 1.0f, 0.0f }
 };
 
 // GOAL: 
@@ -2246,7 +2284,6 @@ static Vec3 quadVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: fix text alignment
 // TODO: draw fps & model stats text on screen
 // TODO: mouse click + drag controls for model rotation
 // TODO: optimize grid drawing
@@ -2269,6 +2306,7 @@ int main()
     float clearColor[] = { 0.3f, 0.4f, 0.9f, 1.0f };
 
     ID3D11RasterizerState* rasterizerState = InitDx11RasterizerState(&dx);
+    ID3D11BlendState* blendState = InitDx11RasterizerBlendState(dx);
 
     Dx11Program basicColorProgram = CreateDx11ProgramFromFiles("res/basiccolorvs.hlsl", "res/basiccolorps.hlsl", sizeof(BasicColorShaderData), &dx);
     ID3D11InputLayout* basicColorInputLayout = CreateBasicColorDx11InputLayout(&dx, basicColorProgram.vsByteCode);
@@ -2325,24 +2363,6 @@ int main()
         maxQuadInstances * sizeof(CharQuadInstanceData), sizeof(CharQuadInstanceData), 0, &dx);
 
     Timer timer = CreateTimer();
-
-    D3D11_BLEND_DESC blendDesc = {};
-    blendDesc.RenderTarget[0] = {
-        .BlendEnable = TRUE,
-        .SrcBlend = D3D11_BLEND_SRC_ALPHA,
-        .DestBlend = D3D11_BLEND_INV_SRC_ALPHA,
-        .BlendOp = D3D11_BLEND_OP_ADD,
-        .SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA,
-        .DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA,
-        .BlendOpAlpha = D3D11_BLEND_OP_ADD,
-        .RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL
-    };
-    ID3D11BlendState* blendState = nullptr;
-    HRESULT blendRes = dx.device->CreateBlendState(
-        &blendDesc,
-        &blendState
-    );
-    ASSERT(blendRes == S_OK);
 
     ShowWindow(window);
     while(true)
@@ -2430,6 +2450,7 @@ int main()
     FreeDx11VertexBuffer(&textPositionVertexBuffer);
     FreeDx11VertexBuffer(&lineVertexBuffer);
     
+    blendState->Release();
     rasterizerState->Release();
     dsState->Release();
     FreeDx11DepthStencilBuffer(&dsBuffer);
