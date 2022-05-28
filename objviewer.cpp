@@ -105,7 +105,8 @@ enum class Vkey
     D = 'D',
     A = 'A',
     Space = VK_SPACE,
-    F1 = VK_F1
+    F1 = VK_F1,
+    LeftMouse = VK_LBUTTON
 };
 
 struct Keybind
@@ -125,6 +126,7 @@ struct Input
     Keybind moveDown;
     Keybind moveUp;
     Keybind devToggle;
+    Keybind dragModel;
     int mousePosX;
     int mousePosY;
     int mouseMoveX;
@@ -133,6 +135,13 @@ struct Input
 
 void HandleKeyUpForBind(Keybind* keybind, MSG* event)
 {
+    // for RAW mouse key inputs
+    if(event == nullptr) {
+        keybind->isKeyDown = false;
+        keybind->keyUpTransitionCount += 1;
+        return;
+    }
+
     if((int)keybind->key == event->wParam)
     {
         keybind->isKeyDown = false;
@@ -142,6 +151,13 @@ void HandleKeyUpForBind(Keybind* keybind, MSG* event)
 
 void HandleKeyDownForBind(Keybind* keybind, MSG* event)
 {
+    // for RAW mouse key inputs
+    if(event == nullptr) {
+        keybind->isKeyDown = true;
+        keybind->keyDownTransitionCount += 1;
+        return;
+    }
+
     if((int)keybind->key == event->wParam)
     {
         keybind->isKeyDown = true;
@@ -165,6 +181,7 @@ void ResetInputKeyTransitions(Input* input)
     ResetKeyTransitions(&input->moveDown);
     ResetKeyTransitions(&input->moveUp);
     ResetKeyTransitions(&input->devToggle);
+    ResetKeyTransitions(&input->dragModel);
 }
 
 void ResetRelativeInputMouseData(Input* input)
@@ -219,6 +236,14 @@ bool ProcessWindowEvents(Input* input)
             {
                 input->mouseMoveX += rawInput.data.mouse.lLastX;
                 input->mouseMoveY += rawInput.data.mouse.lLastY;
+
+                if((rawInput.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN) == RI_MOUSE_LEFT_BUTTON_DOWN) {
+                    HandleKeyDownForBind(&input->dragModel, nullptr);
+                }
+                else if((rawInput.data.mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) == RI_MOUSE_LEFT_BUTTON_UP) {
+                    HandleKeyUpForBind(&input->dragModel, nullptr);
+                }
+
             }
         }
         else if(event.message == WM_KEYUP)
@@ -1833,7 +1858,8 @@ Mat4 GetModelMatFromTransform(const Transform& transform)
     // TODO: support rotation on all axis
     return TranslateMat4(transform.position) * 
         ScaleMat4(transform.scale) * 
-        RotateEulerXMat4(transform.rotation.x);
+        RotateEulerXMat4(transform.rotation.x) *
+        RotateEulerYMat4(transform.rotation.y);
 }
 
 struct Dx11ModelData
@@ -2322,7 +2348,6 @@ static Vec3 quadVertices[] = {
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: mouse click + drag controls for model rotation
 // TODO: optimize grid drawing
 int main()
 {
@@ -2386,7 +2411,8 @@ int main()
         .moveRight    = { .key = Vkey::D },
         .moveDown     = { .key = Vkey::A },
         .moveUp       = { .key = Vkey::Space },
-        .devToggle    = { .key = Vkey::F1 }
+        .devToggle    = { .key = Vkey::F1 },
+        .dragModel    = { .key = Vkey::LeftMouse }
     };
 
     Mat4 orthoProjMat = OrthoProjMat4(0.0f, viewport.Width, 0.0f, viewport.Height, 0.1f, 100.0f);
@@ -2424,7 +2450,8 @@ int main()
         if(cam.isControlOn)
         {
             TrapCursorInWindow(window, (int)viewport.Width, (int)viewport.Height);
-            UpdateFpsCam(&cam, &input, (float)timer.deltaTime);
+            if(!input.dragModel.isKeyDown)
+                UpdateFpsCam(&cam, &input, (float)timer.deltaTime);
         }
 
         dx.context->RSSetViewports(1, &viewport);
@@ -2434,6 +2461,13 @@ int main()
         dx.context->OMSetBlendState(blendState, nullptr, 0xffffffff);
         dx.context->ClearRenderTargetView(backbuffer.view, clearColor);
         dx.context->ClearDepthStencilView(dsBuffer.view, D3D11_CLEAR_DEPTH, 1.0f, 0.0f);
+
+        if(input.dragModel.isKeyDown) {
+            if(input.mouseMoveX != 0)
+                monkeyTransform.rotation.y += (input.mouseMoveX * timer.deltaTime);
+            if(input.mouseMoveY != 0)
+                monkeyTransform.rotation.x += (input.mouseMoveY * timer.deltaTime);
+        }
 
         Mat4 monkeyModelMat = GetModelMatFromTransform(monkeyTransform);
         Mat4 monkeyNormalMat = NormalMat4FromModelMat(monkeyModelMat);
