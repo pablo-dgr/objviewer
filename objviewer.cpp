@@ -41,6 +41,76 @@ struct Vec4
     float w;
 };
 
+static Vec3 cubeVertices[] = {
+    // back face
+    {  0.5f,  0.5f, -0.5f },
+    {  0.5f, -0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    { -0.5f,  0.5f, -0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    // front face
+    { -0.5f, -0.5f,  0.5f },
+    {  0.5f, -0.5f,  0.5f },
+    {  0.5f,  0.5f,  0.5f },
+
+    {  0.5f,  0.5f,  0.5f },
+    { -0.5f,  0.5f,  0.5f },
+    { -0.5f, -0.5f,  0.5f },
+
+    // left face
+    { -0.5f,  0.5f,  0.5f },
+    { -0.5f,  0.5f, -0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    { -0.5f, -0.5f, -0.5f },
+    { -0.5f, -0.5f,  0.5f },
+    { -0.5f,  0.5f,  0.5f },
+
+    // right face
+    {  0.5f, -0.5f, -0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    {  0.5f,  0.5f,  0.5f },
+
+    {  0.5f,  0.5f,  0.5f },
+    {  0.5f, -0.5f,  0.5f },
+    {  0.5f, -0.5f, -0.5f },
+
+    // bottom face    
+    { -0.5f, -0.5f, -0.5f },
+    {  0.5f, -0.5f, -0.5f },
+    {  0.5f, -0.5f,  0.5f },
+
+    {  0.5f, -0.5f,  0.5f },
+    { -0.5f, -0.5f,  0.5f },
+    { -0.5f, -0.5f, -0.5f },
+
+    // top face
+    {  0.5f,  0.5f,  0.5f },
+    {  0.5f,  0.5f, -0.5f },
+    { -0.5f,  0.5f, -0.5f },
+
+    { -0.5f,  0.5f, -0.5f },
+    { -0.5f,  0.5f,  0.5f },
+    {  0.5f,  0.5f,  0.5f }
+};
+
+static Vec3 lineVertices[] = {
+    { -0.5f, 0.0f, 0.0f },
+    {  0.5f, 0.0f, 0.0f }
+};
+
+static Vec3 quadVertices[] = {
+    { 0.0f, 1.0f, 0.0f },
+    { 0.0f, 0.0f, 0.0f },
+    { 1.0f, 0.0f, 0.0f },
+    { 1.0f, 0.0f, 0.0f },
+    { 1.0f, 1.0f, 0.0f },
+    { 0.0f, 1.0f, 0.0f }
+};
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     if(uMsg == WM_CLOSE)
@@ -657,6 +727,31 @@ ID3D11InputLayout* CreateTextDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
     return inputLayout;
 }
 
+ID3D11InputLayout* CreateLineGridDx11InputLayout(Dx11* dx, ID3DBlob* vsByteCode)
+{
+    UINT instanceStepRate = 1;
+
+    D3D11_INPUT_ELEMENT_DESC inputElements[] = {
+        CreateDx11InputElDesc(InputElType::Position, 0, 0, 0, false, 0),
+
+        CreateDx11InputElDesc(InputElType::Matrix, 0, 1, 0, true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 1, 1, 1 * sizeof(Vec4), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 2, 1, 2 * sizeof(Vec4), true, instanceStepRate),
+        CreateDx11InputElDesc(InputElType::Matrix, 3, 1, 3 * sizeof(Vec4), true, instanceStepRate),
+    };
+
+    ID3D11InputLayout* inputLayout = nullptr;
+    HRESULT res = dx->device->CreateInputLayout(
+        inputElements,
+        ARRAY_LEN(inputElements),
+        vsByteCode->GetBufferPointer(),
+        vsByteCode->GetBufferSize(),
+        &inputLayout
+    );
+    ASSERT(res == S_OK);
+    return inputLayout;
+}
+
 struct String
 {
     const char* data;
@@ -1247,6 +1342,13 @@ struct TextShaderData
     Vec4 color;
 };
 CHECK_CBUFFER_ALIGNMENT(TextShaderData);
+
+struct LineGridShaderData
+{
+    Mat4 projViewMat;
+    Vec4 color;
+};
+CHECK_CBUFFER_ALIGNMENT(LineGridShaderData);
 
 ID3D11Buffer* CreateDx11ConstantBuffer(UINT dataByteSize, Dx11* dx)
 {
@@ -2142,35 +2244,78 @@ void DrawLine(Dx11& dx, Vec3 position, Vec3 scale, float yRotation, ID3D11Buffer
     dx.context->Draw(2, 0);
 }
 
-void DrawLineGrid(Dx11& dx, int xSquaresHalf, int zSquaresHalf, Dx11VertexBuffer* vertexBuffer, 
-    ID3D11InputLayout* inputLayout, Dx11Program* program, const FpsCam& cam)
+struct LineGrid
 {
-    dx.context->IASetVertexBuffers(0, 1, &vertexBuffer->buffer, &vertexBuffer->stride, &vertexBuffer->byteOffset);
-    dx.context->IASetInputLayout(inputLayout);
-    dx.context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    dx.context->VSSetShader(program->vs, nullptr, 0);
-    dx.context->PSSetShader(program->ps, nullptr, 0);
+    Dx11VertexBuffer positionVertexBuffer;
+    Mat4* instanceData;
+    Dx11VertexBuffer instanceVertexBuffer;
+    UINT totalLineCount;
+};
 
+void FreeLineGrid(LineGrid* grid)
+{
+    grid->positionVertexBuffer.buffer->Release();
+    grid->instanceVertexBuffer.buffer->Release();
+    free(grid->instanceData);
+    *grid = {};
+}
+
+LineGrid GenerateLineGrid(Dx11& dx, int xSquaresHalf, int zSquaresHalf)
+{
+    LineGrid grid = {};
+    grid.positionVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, lineVertices, 
+        sizeof(lineVertices), 3 * sizeof(float), 0);
+    
     int nrOfXLines = 1 + (zSquaresHalf * 2);
     int nrOfZLines = 1 + (xSquaresHalf * 2);
+    grid.totalLineCount = nrOfXLines + nrOfZLines;
+    
+    grid.instanceData = (Mat4*)calloc(1, grid.totalLineCount * sizeof(Mat4));
+    ASSERT(grid.instanceData != nullptr);
 
+    int instanceWriteIndex = 0;
     // draw lines parallel to x-axis
     for(int i = 0; i < nrOfXLines; i++) {
-        Vec3 position = {};
-        position.z = (float)i;
-        position.z -= (float)((nrOfXLines - 1) / 2);
-        float xLineLen = (float)(nrOfZLines - 1);
-        DrawLine(dx, position, { xLineLen, 1.0f, 0.0f }, 0.0f, program->cBuffer, cam);
+        Transform transform = {
+            .scale = { (float)(nrOfZLines - 1), 1.0f, 1.0f }
+        };
+        transform.position.z = (float)i;
+        transform.position.z -= (float)((nrOfXLines - 1) / 2);
+        grid.instanceData[instanceWriteIndex++] = GetModelMatFromTransform(transform);
     }
 
     // draw lines parallel to z-axis
     for(int i = 0; i < nrOfZLines; i++) {
-        Vec3 position = {};
-        position.x = (float)i;
-        position.x -= (float)((nrOfZLines - 1) / 2);
-        float zLineLen = (float)(nrOfXLines - 1);
-        DrawLine(dx, position, { 1.0f, 1.0f, zLineLen }, 90.0f, program->cBuffer, cam);
+        Transform transform = {
+            .scale = { 1.0f, 1.0f, (float)(nrOfXLines - 1) }
+        };
+        transform.position.x = (float)i;
+        transform.position.x -= (float)((nrOfZLines - 1) / 2);
+        transform.rotation.y = toRadians(90.0f);
+        grid.instanceData[instanceWriteIndex++] = GetModelMatFromTransform(transform);
     }
+
+    grid.instanceVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, grid.instanceData, 
+        grid.totalLineCount * sizeof(Mat4), sizeof(Mat4), 0);
+    
+    return grid;
+}
+
+void DrawLineGrid(Dx11& dx, LineGrid& grid, ID3D11InputLayout* inputLayout, Dx11Program& program,
+    void* programData, UINT programDataByteSize)
+{
+    dx.context->IASetVertexBuffers(0, 1, &grid.positionVertexBuffer.buffer, &grid.positionVertexBuffer.stride, 
+        &grid.positionVertexBuffer.byteOffset);
+    dx.context->IASetVertexBuffers(1, 1, &grid.instanceVertexBuffer.buffer, &grid.instanceVertexBuffer.stride, 
+        &grid.instanceVertexBuffer.byteOffset);
+    dx.context->IASetInputLayout(inputLayout);
+    dx.context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    dx.context->VSSetShader(program.vs, nullptr, 0);
+    dx.context->PSSetShader(program.ps, nullptr, 0);
+
+    UploadDataToBuffer(dx, program.cBuffer, programData, programDataByteSize);
+    dx.context->VSSetConstantBuffers(0, 1, &program.cBuffer);
+    dx.context->DrawInstanced(2, grid.totalLineCount, 0, 0);
 }
 
 void DrawDx11Model(Dx11& dx, Dx11ModelData& model, ID3D11InputLayout* inputLayout, const Dx11Program& program, 
@@ -2273,82 +2418,12 @@ ID3D11DepthStencilState* CreateDx11DepthStencilState(Dx11* dx)
     return dsState;
 }
 
-static Vec3 cubeVertices[] = {
-    // back face
-    {  0.5f,  0.5f, -0.5f },
-    {  0.5f, -0.5f, -0.5f },
-    { -0.5f, -0.5f, -0.5f },
-
-    { -0.5f,  0.5f, -0.5f },
-    {  0.5f,  0.5f, -0.5f },
-    { -0.5f, -0.5f, -0.5f },
-
-    // front face
-    { -0.5f, -0.5f,  0.5f },
-    {  0.5f, -0.5f,  0.5f },
-    {  0.5f,  0.5f,  0.5f },
-
-    {  0.5f,  0.5f,  0.5f },
-    { -0.5f,  0.5f,  0.5f },
-    { -0.5f, -0.5f,  0.5f },
-
-    // left face
-    { -0.5f,  0.5f,  0.5f },
-    { -0.5f,  0.5f, -0.5f },
-    { -0.5f, -0.5f, -0.5f },
-
-    { -0.5f, -0.5f, -0.5f },
-    { -0.5f, -0.5f,  0.5f },
-    { -0.5f,  0.5f,  0.5f },
-
-    // right face
-    {  0.5f, -0.5f, -0.5f },
-    {  0.5f,  0.5f, -0.5f },
-    {  0.5f,  0.5f,  0.5f },
-
-    {  0.5f,  0.5f,  0.5f },
-    {  0.5f, -0.5f,  0.5f },
-    {  0.5f, -0.5f, -0.5f },
-
-    // bottom face    
-    { -0.5f, -0.5f, -0.5f },
-    {  0.5f, -0.5f, -0.5f },
-    {  0.5f, -0.5f,  0.5f },
-
-    {  0.5f, -0.5f,  0.5f },
-    { -0.5f, -0.5f,  0.5f },
-    { -0.5f, -0.5f, -0.5f },
-
-    // top face
-    {  0.5f,  0.5f,  0.5f },
-    {  0.5f,  0.5f, -0.5f },
-    { -0.5f,  0.5f, -0.5f },
-
-    { -0.5f,  0.5f, -0.5f },
-    { -0.5f,  0.5f,  0.5f },
-    {  0.5f,  0.5f,  0.5f }
-};
-
-static Vec3 lineVertices[] = {
-    { -0.5f, 0.0f, 0.0f },
-    {  0.5f, 0.0f, 0.0f }
-};
-
-static Vec3 quadVertices[] = {
-    { 0.0f, 1.0f, 0.0f },
-    { 0.0f, 0.0f, 0.0f },
-    { 1.0f, 0.0f, 0.0f },
-    { 1.0f, 0.0f, 0.0f },
-    { 1.0f, 1.0f, 0.0f },
-    { 0.0f, 1.0f, 0.0f }
-};
-
-// GOAL: 
+// ORIGINAL GOAL: 
 // =============================================
 // Load a textured 3D model from an .obj file 
 // with reference grid at 0.0.0, some info stats in corner and mouse drag controls and keyboard movement
 // =============================================
-// TODO: optimize grid drawing
+
 int main()
 {
     int windowWidth = 1280;
@@ -2379,6 +2454,9 @@ int main()
     Dx11Program textProgram = CreateDx11ProgramFromFiles("res/textvs.hlsl", "res/textps.hlsl", sizeof(TextShaderData), &dx);
     ID3D11InputLayout* textInputLayout = CreateTextDx11InputLayout(&dx, textProgram.vsByteCode);
 
+    Dx11Program lineGridProgram = CreateDx11ProgramFromFiles("res/linegridvs.hlsl", "res/linegridps.hlsl", sizeof(LineGridShaderData), &dx);
+    ID3D11InputLayout* lineGridInputLayout = CreateLineGridDx11InputLayout(&dx, lineGridProgram.vsByteCode);
+
     Transform cubeTransform = {
         .position = { 1.5f, 4.5f, -1.5f },
         .scale = { 0.4f, 0.4f, 0.4f }
@@ -2393,8 +2471,7 @@ int main()
     };
     Dx11ModelData monkeyDx11Model = CreateDx11ModelDataFromObjModel(dx, monkeyObjModel);
 
-    Dx11VertexBuffer lineVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, lineVertices, 
-        sizeof(lineVertices), 3 * sizeof(float), 0);
+    LineGrid lineGrid = GenerateLineGrid(dx, 6, 6);
 
     Dx11VertexBuffer textPositionVertexBuffer = CreateDx11VertexBuffer(dx, BufferUsageType::Static, quadVertices, 
         sizeof(quadVertices), 3 * sizeof(float), 0);
@@ -2488,7 +2565,11 @@ int main()
         };
         DrawDx11Model(dx, cubeDx11Model, basicColorInputLayout, basicColorProgram, &basicColorShaderData, sizeof(basicColorShaderData));
 
-        DrawLineGrid(dx, 6, 6, &lineVertexBuffer, basicColorInputLayout, &basicColorProgram, cam);
+        LineGridShaderData lineGridShaderData = {
+            .projViewMat = cam.projMat * cam.viewMat,
+            .color = { 0.0f, 0.0f, 0.0f, 1.0f }
+        };
+        DrawLineGrid(dx, lineGrid, lineGridInputLayout, lineGridProgram, &lineGridShaderData, sizeof(lineGridShaderData));
 
         TextShaderData textShaderData = {
             .color = { 1.0f, 1.0f, 1.0f, 1.0f }
@@ -2519,22 +2600,25 @@ int main()
     FreeDx11ShaderTexture2D(&bakedCharMapShaderTex);
     FreeBakedCharMap(&bakedCharMap);
 
+    FreeLineGrid(&lineGrid);
+
     FreeDx11ModelData(&monkeyDx11Model);
     FreeObjModel(&monkeyObjModel);
     
     FreeDx11ModelData(&cubeDx11Model);
 
+    lineGridInputLayout->Release();
     textInputLayout->Release();
     basicColorInputLayout->Release();
     phongInputLayout->Release();
 
+    FreeDx11Program(&lineGridProgram);
     FreeDx11Program(&textProgram);
     FreeDx11Program(&basicColorProgram);
     FreeDx11Program(&phongProgram);
 
     FreeDx11VertexBuffer(&textInstanceVertexBuffer);
     FreeDx11VertexBuffer(&textPositionVertexBuffer);
-    FreeDx11VertexBuffer(&lineVertexBuffer);
     
     blendState->Release();
     rasterizerState->Release();
@@ -2543,5 +2627,6 @@ int main()
     FreeDx11Backbuffer(&backbuffer);
     FreeDx11(&dx);
     DestroyWindow(window);
+    
     return 0;
 }
